@@ -102,8 +102,62 @@ type Path = (int * int) array
 
 type PartialSolution = { Board : Board; Path : (int * int) array }
     
+module Sim =
+
+    let dropAlien x y (trainState : AlienType option) (boxes : Map<int*int,AlienType>) =
+        match trainState with
+        | None ->
+            trainState, boxes
+        | Some ts ->
+            let rec dropIter dirs =
+                match dirs with
+                | [] ->
+                    trainState, boxes
+                | (dx,dy)::dirs' ->
+                    let x' = x + dx
+                    let y' = y + dy
+                    if boxes.TryFind(x', y') = Some ts
+                    then
+                        None, boxes.Remove(x', y')
+                    else
+                        dropIter dirs'
+
+            dropIter directionVectors
+
+    let getAlien x y (trainState : AlienType option) (aliens : Map<int*int,AlienType>) =
+        match trainState with
+        | Some _ ->
+            trainState, aliens
+        | None ->
+            let rec getIter dirs =
+                match dirs with
+                | [] ->
+                    trainState, aliens
+                | (dx,dy)::dirs' ->
+                    let x' = x + dx
+                    let y' = y + dy
+                    match aliens.TryFind(x', y') with
+                    | None ->
+                        getIter dirs'
+                    | Some a ->
+                        Some a, aliens.Remove(x', y')
+
+            getIter directionVectors
+
+    let rec runTrain (ps:PartialSolution) step (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
+        if step = ps.Path.Length
+        then
+            trainState, aliens, boxes
+        else
+            let (x, y) = ps.Path.[step]
+            let trainState, boxes  = dropAlien x y trainState boxes
+            let trainState, aliens = getAlien  x y trainState aliens
+            runTrain ps (step + 1) trainState aliens boxes
+
+
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
+
 
     let make (board : Board) =
         { Board = board; Path = [| board.TrainEntry |]}
@@ -155,6 +209,7 @@ module PartialSolution =
         Array.fold (fun a b -> sprintf "%s%s%s" a Environment.NewLine b) (sprintf "track: %A" (getPath ps)) rows
 
     let toString = toStringWithOverrides Map.empty
+    
     let tryAddTrack x y ps =
         match getBoard ps with
         | Board board ->
@@ -247,91 +302,40 @@ module PartialSolution =
         |> List.choose (fun (dx, dy) -> ps |> tryAddTrack (x + dx) (y + dy))
         |> List.filter hasReachableEnd
 
+    let countErrors (ps : PartialSolution) : int =
+        let aliens = ps.Board.Aliens |> Map.ofArray
+        let boxes  = ps.Board.Boxes |> Map.ofArray
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain ps 0 None aliens boxes
 
-let countErrors (s : PartialSolution) : int =
-    let dropAlien x y (trainState : AlienType option) (boxes : Map<int*int,AlienType>) =
-        match trainState with
-        | None ->
-            trainState, boxes
-        | Some ts ->
-            let rec dropIter dirs =
-                match dirs with
-                | [] ->
-                    trainState, boxes
-                | (dx,dy)::dirs' ->
-                    let x' = x + dx
-                    let y' = y + dy
-                    if boxes.TryFind(x', y') = Some ts
-                    then
-                        None, boxes.Remove(x', y')
-                    else
-                        dropIter dirs'
+        let bools =
+            [
+                trainState <> None
+                isComplete ps |> not
+            ]
+            |> List.map (function true -> 1 | false -> 0)
+            |> List.sum
+        let ints = 
+            [
+                remainingAliens.Count
+                remainingBoxes.Count
+            ]
+            |> List.sum
+        bools + ints
 
-            dropIter directionVectors
+    let testCompleteSolution (s : PartialSolution) : bool =
+        countErrors s = 0
 
-    let getAlien x y (trainState : AlienType option) (aliens : Map<int*int,AlienType>) =
-        match trainState with
-        | Some _ ->
-            trainState, aliens
-        | None ->
-            let rec getIter dirs =
-                match dirs with
-                | [] ->
-                    trainState, aliens
-                | (dx,dy)::dirs' ->
-                    let x' = x + dx
-                    let y' = y + dy
-                    match aliens.TryFind(x', y') with
-                    | None ->
-                        getIter dirs'
-                    | Some a ->
-                        Some a, aliens.Remove(x', y')
-
-            getIter directionVectors
-
-    let rec iter step (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
-        if step = s.Path.Length
-        then
-            let bools =
-                [
-                    trainState <> None
-                    PartialSolution.isComplete s |> not
-                ]
-                |> List.map (function true -> 1 | false -> 0)
-                |> List.sum
-            let ints = 
-                [
-                    aliens.Count
-                    boxes.Count
-                ]
-                |> List.sum
-            bools + ints
-            
-        else
-            let (x, y) = s.Path.[step]
-            let trainState, boxes  = dropAlien x y trainState boxes
-            let trainState, aliens = getAlien  x y trainState aliens
-            iter (step + 1) trainState aliens boxes
-
-    let aliens = s.Board.Aliens |> Map.ofArray
-    let boxes  = s.Board.Boxes |> Map.ofArray
-
-    iter 0 None aliens boxes
-
-let testCompleteSolution (s : PartialSolution) : bool =
-    countErrors s = 0
-
-let doTestCompleteSolution (s : PartialSolution) : bool =
-    printfn "doTestCompleteSolution"
-    printfn "%s" <| s.ToString()
-    let ret = testCompleteSolution s
-    printfn "%A" ret
-    ret
+    let doTestCompleteSolution (s : PartialSolution) : bool =
+        printfn "doTestCompleteSolution"
+        printfn "%s" <| toString s
+        let ret = testCompleteSolution s
+        printfn "%A" ret
+        ret
 
 let rec backtrackingSolver (ps : PartialSolution) =
     if PartialSolution.isComplete ps
     then
-        if testCompleteSolution ps
+        if PartialSolution.testCompleteSolution ps
         then Some ps
         else None
     else
@@ -350,7 +354,7 @@ let shortestPathSolver (ps : PartialSolution) =
         match current with
         | [] ->
             iter next []
-        | c::_ when PartialSolution.isComplete c && testCompleteSolution c ->
+        | c::_ when PartialSolution.isComplete c && PartialSolution.testCompleteSolution c ->
             Some c
         | c::cs when PartialSolution.isComplete c ->
             iter cs next
@@ -389,7 +393,7 @@ let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : 
         //printfn "maxps.Path.Length = %A" maxps.Path.Length
         if PartialSolution.isComplete minps
         then
-            if testCompleteSolution minps
+            if PartialSolution.testCompleteSolution minps
             then
                 Some minps
             else
@@ -403,7 +407,7 @@ let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : 
     iter (Set.add (makeComparable ps) Set.empty)
         
 let lossFunction (ps : PartialSolution) =
-    -((countErrors ps * 3) + ps.Path.Length)
+    -((PartialSolution.countErrors ps * 3) + ps.Path.Length)
 
 let shortestPathSolver2 = aStarSolver (lossFunction) (fun ps -> 0)
 
@@ -459,12 +463,12 @@ let andromeda11 =
 
 
 
-let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.make
+let partialSolution1 = b1 |> Board.Parse |> PartialSolution.make
 
-partialSolution1.ToString() |> printfn "%s"
+partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
-let soln = shortestPathSolver2 partialSolution1  
-match soln with Some s -> printfn "found solution!"; printfn "%s" (s.ToString()) | None -> printfn "no solution found"
+let soln = shortestPathSolver partialSolution1  
+match soln with Some s -> printfn "found solution!"; printfn "%s" (s |> PartialSolution.toString) | None -> printfn "no solution found"
 
 
 
