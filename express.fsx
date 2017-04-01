@@ -52,7 +52,7 @@ type Direction = Up | Down | Left | Right with
 
 let directionVectors = [ Left.V ; Right.V ; Up.V ; Down.V ]
 
-let trackGraphics (trainState : AlienType option) =
+let trackGraphics (n : int) =
     let raw c = 
         [
             Up, Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
@@ -64,8 +64,8 @@ let trackGraphics (trainState : AlienType option) =
         ]
     
     let c =
-        match trainState with None -> '.' | Some(AlienType(alien)) -> alien
-    
+        //match trainState with None -> '.' | Some(AlienType(alien)) -> alien
+        n.ToString() |> Seq.last
     raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
 
 type Board = Board of FixedCell array array
@@ -107,7 +107,7 @@ type Path = (int * int) array
 type PartialSolution =
     {
         Board : Board
-        Path : ((int * int) * AlienType option) array
+        Path : ((int * int) * AlienType option * int) array
         RemainingAliens : Map<int*int,AlienType>
         RemainingBoxes : Map<int*int,AlienType>
     }
@@ -161,18 +161,23 @@ module Sim =
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
     let getBoard (ps : PartialSolution) = ps.Board
-    let getPath (ps : PartialSolution) = ps.Path |> Array.map fst
-    let getTrainState (ps : PartialSolution) = ps.Path |> Array.last |> snd
-    let getPathWithTrainState (ps : PartialSolution) = ps.Path
+    let getPath (ps : PartialSolution) : (int * int) array =
+        ps.Path |> Array.map (fun (a, _, _) -> a)
+    let getTrainState (ps : PartialSolution) : AlienType option =
+        ps.Path |> Array.last |> (fun (_, b, _) -> b)
+    let getPathWithTrainState (ps : PartialSolution) : ((int * int) * AlienType option) array =
+        ps.Path |> Array.map (fun (a, b, _) -> (a, b))
+    let getTransitionsRemaining (ps : PartialSolution) : int array =
+        ps.Path |> Array.map (fun (_, _, c) -> c)
     let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
     let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
     
     let makeChild coords (ps : PartialSolution) =
         let trainState, remainingAliens, remainingBoxes = Sim.runTrain coords (ps |> getTrainState) ps.RemainingAliens ps.RemainingBoxes
         {
-            Board = ps.Board;
-            Path = Array.append ps.Path [|coords, trainState|];
-            RemainingAliens = remainingAliens;
+            Board = ps.Board
+            Path = Array.append ps.Path [|coords, trainState, remainingAliens.Count + remainingBoxes.Count|]
+            RemainingAliens = remainingAliens
             RemainingBoxes = remainingBoxes
         }
 
@@ -180,8 +185,8 @@ module PartialSolution =
         let aliens = board.Aliens |> Map.ofArray
         let boxes  = board.Boxes |> Map.ofArray
         let trainState, remainingAliens, remainingBoxes = Sim.runTrain board.TrainEntry None aliens boxes
-        { Board = board; Path = [| board.TrainEntry, trainState |]; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
-
+        let transitionsRemaining = remainingAliens.Count + remainingBoxes.Count
+        { Board = board; Path = [| board.TrainEntry, trainState, transitionsRemaining |]; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
         
     let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
         let getDirection (x, y) (x', y') =
@@ -194,13 +199,25 @@ module PartialSolution =
         
         //printfn "this.Path = %A" this.Path
         // make a list of cells the track goes through with the direction from which the train enters
-        let trackEntries = getPathWithTrainState ps |> Array.pairwise |> Array.map (fun ((curr,train), (next,_)) -> next, getDirection next curr, train)
+        let trackEntries =
+            getPath ps
+            |> Array.pairwise
+            |> Array.map (fun ((curr), (next)) -> next, getDirection next curr)
         //printfn "trackEntries = %A" trackEntries
         // make a list of cells the track goes through with the direction from which it enters AND leaves
-        let trackEntriesAndExits = trackEntries |> Array.pairwise |> Array.map (fun ((c,entry,_), (_,exit,train)) -> c, entry, exit.Invert, train)
+        let trackEntriesAndExits =
+            trackEntries
+            |> Array.pairwise
+            |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
         //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
         // convert to graphics and put in a map for querying
-        let trackAsGraphics = trackEntriesAndExits |> Array.map (fun (c, entry, exit, train) -> c, (trackGraphics train).[entry, exit]) |> Map.ofArray
+        let transitionRemainings = getTransitionRemainings ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
+
+        let trackAsGraphics = 
+            trackEntriesAndExits
+            |> Array.zip transitionRemainings
+            |> Array.map (fun (n, (c, entry, exit)) -> c, (trackGraphics n).[entry, exit])
+            |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
         let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
@@ -420,7 +437,7 @@ let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : 
     iter (Set.add (makeComparable ps) Set.empty)
         
 let lossFunction (ps : PartialSolution) =
-    -((PartialSolution.countErrors ps * 3) + ps.Path.Length)
+    -((PartialSolution.countErrors ps * 10) + ps.Path.Length)
 
 let shortestPathSolver2 = aStarSolver (lossFunction) (fun ps -> 0)
 
@@ -476,7 +493,7 @@ let andromeda11 =
 
 
 
-let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.make
+let partialSolution1 = andromeda11 |> Board.Parse |> PartialSolution.make
 
 partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
