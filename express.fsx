@@ -52,17 +52,21 @@ type Direction = Up | Down | Left | Right with
 
 let directionVectors = [ Left.V ; Right.V ; Up.V ; Down.V ]
 
-let trackGraphics =
-    let raw = 
+let trackGraphics (trainState : AlienType option) =
+    let raw c = 
         [
-            Up, Down,    CellGraphic(' ', '|', ' ', ' ', 'o', ' ', ' ', '|', ' ')
-            Up, Left,    CellGraphic(' ', '|', ' ', '-', 'o', ' ', ' ', ' ', ' ')
-            Up, Right,   CellGraphic(' ', '|', ' ', ' ', 'o', '-', ' ', ' ', ' ')
-            Down, Left,  CellGraphic(' ', ' ', ' ', '-', 'o', ' ', ' ', '|', ' ')
-            Down, Right, CellGraphic(' ', ' ', ' ', ' ', 'o', '-', ' ', '|', ' ')
-            Left, Right, CellGraphic(' ', ' ', ' ', '-', 'o', '-', ' ', ' ', ' ')
+            Up, Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
+            Up, Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
+            Up, Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
+            Down, Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
+            Down, Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
+            Left, Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
         ]
-    raw |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+    
+    let c =
+        match trainState with None -> '.' | Some(AlienType(alien)) -> alien
+    
+    raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
 
 type Board = Board of FixedCell array array
     with
@@ -103,14 +107,12 @@ type Path = (int * int) array
 type PartialSolution =
     {
         Board : Board
-        Path : (int * int) array
-        TrainState : AlienType option
+        Path : ((int * int) * AlienType option) array
         RemainingAliens : Map<int*int,AlienType>
         RemainingBoxes : Map<int*int,AlienType>
     }
 
 module Sim =
-
     let dropAlien x y (trainState : AlienType option) (boxes : Map<int*int,AlienType>) =
         match trainState with
         | None ->
@@ -158,28 +160,28 @@ module Sim =
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
-    let makeChild (x,y) (ps : PartialSolution) =
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain (x,y) ps.TrainState ps.RemainingAliens ps.RemainingBoxes
+    let getBoard (ps : PartialSolution) = ps.Board
+    let getPath (ps : PartialSolution) = ps.Path |> Array.map fst
+    let getTrainState (ps : PartialSolution) = ps.Path |> Array.last |> snd
+    let getPathWithTrainState (ps : PartialSolution) = ps.Path
+    let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
+    let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
+    
+    let makeChild coords (ps : PartialSolution) =
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain coords (ps |> getTrainState) ps.RemainingAliens ps.RemainingBoxes
         {
             Board = ps.Board;
-            Path = Array.append ps.Path [|x, y|];
-            TrainState = trainState;
+            Path = Array.append ps.Path [|coords, trainState|];
             RemainingAliens = remainingAliens;
             RemainingBoxes = remainingBoxes
         }
 
     let make (board : Board) =
-        let path = [| board.TrainEntry |]
         let aliens = board.Aliens |> Map.ofArray
         let boxes  = board.Boxes |> Map.ofArray
         let trainState, remainingAliens, remainingBoxes = Sim.runTrain board.TrainEntry None aliens boxes
-        { Board = board; Path = path; TrainState = trainState; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
+        { Board = board; Path = [| board.TrainEntry, trainState |]; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
 
-    let getBoard (ps : PartialSolution) = ps.Board
-    let getPath (ps : PartialSolution) = ps.Path
-    let getTrainState (ps : PartialSolution) = ps.TrainState
-    let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
-    let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
         
     let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
         let getDirection (x, y) (x', y') =
@@ -192,25 +194,25 @@ module PartialSolution =
         
         //printfn "this.Path = %A" this.Path
         // make a list of cells the track goes through with the direction from which the train enters
-        let trackEntries = getPath ps |> Array.pairwise |> Array.map (fun (curr, next) -> next, getDirection next curr)
+        let trackEntries = getPathWithTrainState ps |> Array.pairwise |> Array.map (fun ((curr,train), (next,_)) -> next, getDirection next curr, train)
         //printfn "trackEntries = %A" trackEntries
         // make a list of cells the track goes through with the direction from which it enters AND leaves
-        let trackEntriesAndExits = trackEntries |> Array.pairwise |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
+        let trackEntriesAndExits = trackEntries |> Array.pairwise |> Array.map (fun ((c,entry,_), (_,exit,train)) -> c, entry, exit.Invert, train)
         //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
         // convert to graphics and put in a map for querying
-        let trackAsGraphics = trackEntriesAndExits |> Array.map (fun (c, entry, exit) -> c, trackGraphics.[entry, exit]) |> Map.ofArray
+        let trackAsGraphics = trackEntriesAndExits |> Array.map (fun (c, entry, exit, train) -> c, (trackGraphics train).[entry, exit]) |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
         let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
 
-        let makeNonTransparent x y (g: CellGraphic option) =
+        let makeNonTransparent (x, y) (g: CellGraphic option) =
             match g, trackAsGraphics.TryFind(x, y) with
             | None, None -> match overrides.TryFind(x,y) with Some q -> q | None -> CellGraphic.make('.')
             | Some q, None -> q
             | None, Some q -> q
             | Some _, Some _ -> failwithf "track overlaps with board at (%d,%d)" x y
 
-        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent x y))
+        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent (x, y)))
         
     let toGraphic = toGraphicWithOverrides Map.empty
         
@@ -232,7 +234,7 @@ module PartialSolution =
             let ok =
                 match board.[x].[y] with
                 | Empty ->
-                    ps.Path |> Array.contains (x,y) |> not
+                    getPath ps |> Array.contains (x,y) |> not
                 | TrainExit ->
                     true
                 | _ ->
