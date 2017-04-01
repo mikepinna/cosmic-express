@@ -151,19 +151,15 @@ module Sim =
 
             getIter directionVectors
 
-    let rec runTrain (path : (int * int) list) (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
-        match path with
-        | [] -> 
-            trainState, aliens, boxes
-        | (x,y)::path' ->
-            let trainState, boxes  = dropAlien x y trainState boxes
-            let trainState, aliens = getAlien  x y trainState aliens
-            runTrain path' trainState aliens boxes
+    let runTrain (x,y) (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
+        let trainState, boxes  = dropAlien x y trainState boxes
+        let trainState, aliens = getAlien  x y trainState aliens
+        trainState, aliens, boxes
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
-    let makeChild x y (ps : PartialSolution) =
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain [x,y] ps.TrainState ps.RemainingAliens ps.RemainingBoxes
+    let makeChild (x,y) (ps : PartialSolution) =
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain (x,y) ps.TrainState ps.RemainingAliens ps.RemainingBoxes
         {
             Board = ps.Board;
             Path = Array.append ps.Path [|x, y|];
@@ -176,8 +172,7 @@ module PartialSolution =
         let path = [| board.TrainEntry |]
         let aliens = board.Aliens |> Map.ofArray
         let boxes  = board.Boxes |> Map.ofArray
-        let p = path |> Array.toList
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain p None aliens boxes
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain board.TrainEntry None aliens boxes
         { Board = board; Path = path; TrainState = trainState; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
 
     let getBoard (ps : PartialSolution) = ps.Board
@@ -244,7 +239,7 @@ module PartialSolution =
                     false
             if ok
             then
-                Some <| makeChild x y ps
+                Some <| makeChild (x,y) ps
             else
                 None
 
