@@ -98,40 +98,91 @@ type Board = Board of FixedCell array array
 
 let mutable debugCounter = 0
 
+type Path = (int * int) array
+
 type PartialSolution = { Board : Board; Path : (int * int) array }
-    with
-    static member Make(board : Board) =
-        { Board = board; Path = [| board.TrainEntry |]} 
+    
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module PartialSolution =
+
+    let make (board : Board) =
+        { Board = board; Path = [| board.TrainEntry |]}
+
+    let getBoard (ps : PartialSolution) = ps.Board
+
+    let getPath (ps : PartialSolution) = ps.Path
         
-    member this.TryAddTrack x y =
-        match this.Board with
+    let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
+        let getDirection (x, y) (x', y') =
+            match (x'-x, y'-y) with
+            | v when v = Left.V  -> Left
+            | v when v = Right.V -> Right
+            | v when v = Up.V    -> Up
+            | v when v = Down.V  -> Down
+            | _ -> failwithf "getDirection: illegal move from (%d,%d) to (%d,%d)" x y x' y'
+        
+        //printfn "this.Path = %A" this.Path
+        // make a list of cells the track goes through with the direction from which the train enters
+        let trackEntries = getPath ps |> Array.pairwise |> Array.map (fun (curr, next) -> next, getDirection next curr)
+        //printfn "trackEntries = %A" trackEntries
+        // make a list of cells the track goes through with the direction from which it enters AND leaves
+        let trackEntriesAndExits = trackEntries |> Array.pairwise |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
+        //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
+        // convert to graphics and put in a map for querying
+        let trackAsGraphics = trackEntriesAndExits |> Array.map (fun (c, entry, exit) -> c, trackGraphics.[entry, exit]) |> Map.ofArray
+        //printfn "trackAsGraphics = %A" trackAsGraphics
+
+        let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
+
+        let makeNonTransparent x y (g: CellGraphic option) =
+            match g, trackAsGraphics.TryFind(x, y) with
+            | None, None -> match overrides.TryFind(x,y) with Some q -> q | None -> CellGraphic.make('.')
+            | Some q, None -> q
+            | None, Some q -> q
+            | Some _, Some _ -> failwithf "track overlaps with board at (%d,%d)" x y
+
+        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent x y))
+        
+    let toGraphic = toGraphicWithOverrides Map.empty
+        
+    let toStringWithOverrides overrides ps =
+        let doRow (r : CellGraphic array) =
+            let row1 = r |> Array.fold (fun s (CellGraphic(a, b, c, _, _, _, _, _, _)) -> sprintf "%s%c%c%c" s a b c) ""
+            let row2 = r |> Array.fold (fun s (CellGraphic(_, _, _, d, e, f, _, _, _)) -> sprintf "%s%c%c%c" s d e f) ""
+            let row3 = r |> Array.fold (fun s (CellGraphic(_, _, _, _, _, _, g, h, i)) -> sprintf "%s%c%c%c" s g h i) ""
+            [|row1; row2; row3|]
+        let rows = ps |> toGraphicWithOverrides overrides |> Array.collect doRow
+        Array.fold (fun a b -> sprintf "%s%s%s" a Environment.NewLine b) (sprintf "track: %A" (getPath ps)) rows
+
+    let toString = toStringWithOverrides Map.empty
+    let tryAddTrack x y ps =
+        match getBoard ps with
         | Board board ->
-            if not (this.Board.IsValidSquare(x, y)) then None else
+            if not (ps.Board.IsValidSquare(x, y)) then None else
             let ok =
                 match board.[x].[y] with
                 | Empty ->
-                    this.Path |> Array.contains (x,y) |> not
+                    ps.Path |> Array.contains (x,y) |> not
                 | TrainExit ->
                     true
                 | _ ->
                     false
             if ok
             then
-                Some <| { this with Path = Array.append this.Path [|x, y|] }
+                Some <| { ps with Path = Array.append ps.Path [|x, y|] }
             else
                 None
 
-    member this.IsComplete =
-        let (x, y) = this.Path |> Array.last
-        match this.Board with Board(cells) -> cells.[x].[y] = TrainExit
+    let isComplete ps =
+        let (x, y) = ps |> getPath |> Array.last
+        match getBoard ps with Board(cells) -> cells.[x].[y] = TrainExit
 
-    member this.HasReachableEnd() =
-        let board = match this.Board with Board x -> x
-        let trackset = this.Path |> Set.ofArray
+    let hasReachableEnd ps =
+        let trackset = ps |> getPath |> Set.ofArray
 
         //printfn "check reachability for board"
         //printfn "%s" (this.ToString())
-        let pathEnd = this.Path |> Array.last 
+        let pathEnd = ps |> getPath |> Array.last 
         let rec iter (surrounded : Set<int*int>) (todo : Set<int*int>) =
         
             let debug() =
@@ -144,14 +195,8 @@ type PartialSolution = { Board : Board; Path : (int * int) array }
                     let o = Map.empty
                     let o = Set.fold (fun m k -> Map.add k schar m) o surrounded
                     let o = Set.fold (fun m k -> Map.add k tchar m) o todo
-                    printfn "%s" (this.ToString o)
+                    printfn "%s" (ps |> toStringWithOverrides o)
 
-            if (surrounded.Count + todo.Count > board.Length * board.[0].Length + 4)
-            then
-                debugCounter <- -1
-                debug()
-                failwith "oops"
-        
             if todo.IsEmpty
             then
                 // didn't find end
@@ -159,9 +204,10 @@ type PartialSolution = { Board : Board; Path : (int * int) array }
                 false
             else
                 let first = Set.minElement todo
+                let b = match getBoard ps with Board b -> b
                 //printfn "first = %A" first
                 match first with
-                | (x, y) when board.[x].[y] = TrainExit ->
+                | (x, y) when b.[x].[y] = TrainExit ->
                     //printfn "%s" "// found end"
                     debug()
                     true
@@ -171,12 +217,12 @@ type PartialSolution = { Board : Board; Path : (int * int) array }
                 | h when h <> pathEnd && trackset.Contains h ->
                     //printfn "%s" "// item clashes with track so move on"
                     iter surrounded (Set.remove h todo)
-                | (x, y) when board.[x].[y] = Empty ->
+                | (x, y) when b.[x].[y] = Empty ->
                     //printfn "%s" "// expand neighbours and add this one to surrounded list"
                     let todo' =
                         directionVectors
                         |> List.map (fun (dx,dy) -> x+dx, y+dy)
-                        |> List.filter this.Board.IsValidSquare
+                        |> List.filter (getBoard ps).IsValidSquare
                         |> List.filter (surrounded.Contains >> not)
                         |> Set.ofList
                         |> Set.union todo
@@ -194,58 +240,13 @@ type PartialSolution = { Board : Board; Path : (int * int) array }
         //if not ret then failwith "hi"
         ret
 
-    member this.Children() =
-        if this.IsComplete then failwith "can't get children from complete board"
-        let x, y = this.Path |> Array.last
+    let children ps =
+        if isComplete ps then failwith "can't get children from complete board"
+        let x, y = ps |> getPath |> Array.last
         directionVectors
-        |> List.choose (fun (dx, dy) -> this.TryAddTrack (x + dx) (y + dy))
-        |> List.filter (fun ps -> ps.HasReachableEnd())
+        |> List.choose (fun (dx, dy) -> ps |> tryAddTrack (x + dx) (y + dy))
+        |> List.filter hasReachableEnd
 
-    member this.ToGraphic (overrides : Map<int*int,CellGraphic>) =
-        let getDirection (x, y) (x', y') =
-            match (x'-x, y'-y) with
-            | v when v = Left.V  -> Left
-            | v when v = Right.V -> Right
-            | v when v = Up.V    -> Up
-            | v when v = Down.V  -> Down
-            | _ -> failwithf "getDirection: illegal move from (%d,%d) to (%d,%d)" x y x' y'
-        
-        //printfn "this.Path = %A" this.Path
-        // make a list of cells the track goes through with the direction from which the train enters
-        let trackEntries = this.Path |> Array.pairwise |> Array.map (fun (curr, next) -> next, getDirection next curr)
-        //printfn "trackEntries = %A" trackEntries
-        // make a list of cells the track goes through with the direction from which it enters AND leaves
-        let trackEntriesAndExits = trackEntries |> Array.pairwise |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
-        //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
-        // convert to graphics and put in a map for querying
-        let trackAsGraphics = trackEntriesAndExits |> Array.map (fun (c, entry, exit) -> c, trackGraphics.[entry, exit]) |> Map.ofArray
-        //printfn "trackAsGraphics = %A" trackAsGraphics
-
-        let transparentBoardGraphic = this.Board.ToTransparentGraphic()
-
-        let makeNonTransparent x y (g: CellGraphic option) =
-            match g, trackAsGraphics.TryFind(x, y) with
-            | None, None -> match overrides.TryFind(x,y) with Some q -> q | None -> CellGraphic.make('.')
-            | Some q, None -> q
-            | None, Some q -> q
-            | Some _, Some _ -> failwithf "track overlaps with board at (%d,%d)" x y
-
-        this.Board.ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent x y))
-        
-    member this.ToGraphic () =
-        this.ToGraphic Map.empty
-
-    member this.ToString (overrides : Map<_,_>) =
-        let doRow (r : CellGraphic array) =
-            let row1 = r |> Array.fold (fun s (CellGraphic(a, b, c, _, _, _, _, _, _)) -> sprintf "%s%c%c%c" s a b c) ""
-            let row2 = r |> Array.fold (fun s (CellGraphic(_, _, _, d, e, f, _, _, _)) -> sprintf "%s%c%c%c" s d e f) ""
-            let row3 = r |> Array.fold (fun s (CellGraphic(_, _, _, _, _, _, g, h, i)) -> sprintf "%s%c%c%c" s g h i) ""
-            [|row1; row2; row3|]
-        let rows = this.ToGraphic overrides |> Array.collect doRow
-        Array.fold (fun a b -> sprintf "%s%s%s" a Environment.NewLine b) (sprintf "track: %A" this.Path) rows
-
-    override this.ToString() =
-        this.ToString Map.empty
 
 let countErrors (s : PartialSolution) : int =
     let dropAlien x y (trainState : AlienType option) (boxes : Map<int*int,AlienType>) =
@@ -294,7 +295,7 @@ let countErrors (s : PartialSolution) : int =
             let bools =
                 [
                     trainState <> None
-                    not s.IsComplete
+                    PartialSolution.isComplete s |> not
                 ]
                 |> List.map (function true -> 1 | false -> 0)
                 |> List.sum
@@ -328,7 +329,7 @@ let doTestCompleteSolution (s : PartialSolution) : bool =
     ret
 
 let rec backtrackingSolver (ps : PartialSolution) =
-    if ps.IsComplete
+    if PartialSolution.isComplete ps
     then
         if testCompleteSolution ps
         then Some ps
@@ -342,19 +343,19 @@ let rec backtrackingSolver (ps : PartialSolution) =
                 match backtrackingSolver h with
                 | Some s -> Some s
                 | None -> getFirst l'
-        getFirst <| ps.Children()
+        ps |> PartialSolution.children |> getFirst
 
 let shortestPathSolver (ps : PartialSolution) =
     let rec iter (current : PartialSolution list) next =
         match current with
         | [] ->
             iter next []
-        | c::_ when c.IsComplete && testCompleteSolution c ->
+        | c::_ when PartialSolution.isComplete c && testCompleteSolution c ->
             Some c
-        | c::cs when c.IsComplete ->
+        | c::cs when PartialSolution.isComplete c ->
             iter cs next
         | c::cs ->
-            iter cs (c.Children() @ next)
+            iter cs (PartialSolution.children c @ next)
 
     iter [ps] []
 
@@ -386,7 +387,7 @@ let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : 
         //printfn "%s" (minps.ToString())
         //printfn "minps.Path.Length = %A" minps.Path.Length
         //printfn "maxps.Path.Length = %A" maxps.Path.Length
-        if minps.IsComplete
+        if PartialSolution.isComplete minps
         then
             if testCompleteSolution minps
             then
@@ -394,7 +395,7 @@ let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : 
             else
                 iter set'
         else
-            minps.Children()
+            PartialSolution.children minps
             |> List.map makeComparable
             |> List.fold (fun s c -> Set.add c s) set'
             |> iter
@@ -458,7 +459,7 @@ let andromeda11 =
 
 
 
-let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.Make
+let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.make
 
 partialSolution1.ToString() |> printfn "%s"
 
