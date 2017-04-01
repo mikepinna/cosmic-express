@@ -151,36 +151,39 @@ module Sim =
 
             getIter directionVectors
 
-    let rec runTrain (path : _ array) step (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
-        if step = path.Length
-        then
+    let rec runTrain (path : (int * int) list) (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
+        match path with
+        | [] -> 
             trainState, aliens, boxes
-        else
-            let (x, y) = path.[step]
+        | (x,y)::path' ->
             let trainState, boxes  = dropAlien x y trainState boxes
             let trainState, aliens = getAlien  x y trainState aliens
-            runTrain path (step + 1) trainState aliens boxes
+            runTrain path' trainState aliens boxes
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
-    let makeWithPath (board : Board) (path : Path) =
-        let aliens = board.Aliens |> Map.ofArray
-        let boxes  = board.Boxes |> Map.ofArray
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain path 0 None aliens boxes
-        { Board = board; Path = path; TrainState = trainState; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
+    let makeChild x y (ps : PartialSolution) =
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain [x,y] ps.TrainState ps.RemainingAliens ps.RemainingBoxes
+        {
+            Board = ps.Board;
+            Path = Array.append ps.Path [|x, y|];
+            TrainState = trainState;
+            RemainingAliens = remainingAliens;
+            RemainingBoxes = remainingBoxes
+        }
 
     let make (board : Board) =
         let path = [| board.TrainEntry |]
-        makeWithPath board path
+        let aliens = board.Aliens |> Map.ofArray
+        let boxes  = board.Boxes |> Map.ofArray
+        let p = path |> Array.toList
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain p None aliens boxes
+        { Board = board; Path = path; TrainState = trainState; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
 
     let getBoard (ps : PartialSolution) = ps.Board
-
     let getPath (ps : PartialSolution) = ps.Path
-
     let getTrainState (ps : PartialSolution) = ps.TrainState
-
     let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
-    
     let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
         
     let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
@@ -241,8 +244,7 @@ module PartialSolution =
                     false
             if ok
             then
-                let path = Array.append ps.Path [|x, y|]
-                Some <| makeWithPath ps.Board path
+                Some <| makeChild x y ps
             else
                 None
 
@@ -477,11 +479,11 @@ let andromeda11 =
 
 
 
-let partialSolution1 = b1 |> Board.Parse |> PartialSolution.make
+let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.make
 
 partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
-let soln = shortestPathSolver partialSolution1  
+let soln = shortestPathSolver2 partialSolution1  
 match soln with Some s -> printfn "found solution!"; printfn "%s" (s |> PartialSolution.toString) | None -> printfn "no solution found"
 
 
