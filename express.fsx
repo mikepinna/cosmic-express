@@ -100,7 +100,7 @@ type Board = Board of FixedCell array array
     member this.ToTransparentGraphic() : CellGraphic option array array =
         match this with Board b -> b |> Array.map (fun row -> row |> Array.map (fun cell -> cell.ToTransparentGraphic))
 
-let mutable debugCounter = 0
+
 
 type Path = (int * int) array
 
@@ -158,8 +158,13 @@ module Sim =
         let trainState, aliens = getAlien  x y trainState aliens
         trainState, aliens, boxes
 
+let mutable totalChildrenMade = 0
+
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
+
+
+
     let getBoard (ps : PartialSolution) = ps.Board
     let getPath (ps : PartialSolution) : (int * int) array =
         ps.Path |> Array.map (fun (a, _, _) -> a)
@@ -211,7 +216,7 @@ module PartialSolution =
             |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
         //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
         // convert to graphics and put in a map for querying
-        let transitionRemainings = getTransitionRemainings ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
+        let transitionRemainings = getTransitionsRemaining ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
 
         let trackAsGraphics = 
             trackEntriesAndExits
@@ -243,6 +248,13 @@ module PartialSolution =
         Array.fold (fun a b -> sprintf "%s%s%s" a Environment.NewLine b) (sprintf "track: %A" (getPath ps)) rows
 
     let toString = toStringWithOverrides Map.empty
+  
+    let mutable debugCounter = 0
+    let debug ps =
+        debugCounter <- debugCounter + 1
+        if debugCounter % 10000 = 0
+        then
+            printfn "%s" (ps |> toString)
     
     let tryAddTrack x y ps =
         match getBoard ps with
@@ -258,6 +270,7 @@ module PartialSolution =
                     false
             if ok
             then
+                totalChildrenMade <- totalChildrenMade + 1
                 Some <| makeChild (x,y) ps
             else
                 None
@@ -265,6 +278,36 @@ module PartialSolution =
     let isComplete ps =
         let (x, y) = ps |> getPath |> Array.last
         match getBoard ps with Board(cells) -> cells.[x].[y] = TrainExit
+
+    let latestMoveWastesTrack ps = 
+        //printfn ""
+        //printfn "latestMoveWastesTrack"
+        let transitionsRemaining = ps |> getTransitionsRemaining
+        //printfn "transitionsRemaining = %A" transitionsRemaining
+        let transitionsRemainingAtEnd = transitionsRemaining |> Array.last
+        //printfn "transitionsRemainingAtEnd = %A" transitionsRemainingAtEnd
+        let x, y = ps |> getPath |> Array.last
+        //printfn "x, y = %A, %A" x y
+        let transitionsRemainingMap =
+            ps.Path
+            |> Array.take (transitionsRemaining.Length - 2)
+            |> Array.map (fun (a, _, c) -> a, c)
+            |> Map.ofArray
+        //printfn "transitionsRemainingMap = %A" transitionsRemainingMap
+        let neighbours = 
+            directionVectors
+            |> List.map (fun (dx, dy) -> x+dx, y+dy)
+        //printfn "neighbours = %A" neighbours
+        let transitionsRemainingAtNeighbouringTrack =
+            neighbours
+            |> List.choose transitionsRemainingMap.TryFind
+        //printfn "transitionsRemainingAtNeighbouringTrack = %A" transitionsRemainingAtNeighbouringTrack
+        let ret = transitionsRemainingAtNeighbouringTrack |> List.exists ((=) transitionsRemainingAtEnd)
+        //printfn "ret = %A" ret
+
+        //if ret then printfn "%A" (toString ps); failwith ""
+
+        ret
 
     let hasReachableEnd ps =
         let trackset = ps |> getPath |> Set.ofArray
@@ -274,22 +317,9 @@ module PartialSolution =
         let pathEnd = ps |> getPath |> Array.last 
         let rec iter (surrounded : Set<int*int>) (todo : Set<int*int>) =
         
-            let debug() =
-                debugCounter <- debugCounter + 1
-                if debugCounter % 10000 = 0
-                then
-                    printfn "iter %d %d %A %A" (surrounded.Count) (todo.Count) surrounded todo
-                    let schar = CellGraphic.make('#')
-                    let tchar = CellGraphic.make('+')
-                    let o = Map.empty
-                    let o = Set.fold (fun m k -> Map.add k schar m) o surrounded
-                    let o = Set.fold (fun m k -> Map.add k tchar m) o todo
-                    printfn "%s" (ps |> toStringWithOverrides o)
-
             if todo.IsEmpty
             then
                 // didn't find end
-                debug()
                 false
             else
                 let first = Set.minElement todo
@@ -298,7 +328,6 @@ module PartialSolution =
                 match first with
                 | (x, y) when b.[x].[y] = TrainExit ->
                     //printfn "%s" "// found end"
-                    debug()
                     true
                 | h when surrounded.Contains h ->
                     //printfn "%s" "// item item already processed so move on"
@@ -330,11 +359,13 @@ module PartialSolution =
         ret
 
     let children ps =
+        debug ps
         if isComplete ps then failwith "can't get children from complete board"
         let x, y = ps |> getPath |> Array.last
         directionVectors
         |> List.choose (fun (dx, dy) -> ps |> tryAddTrack (x + dx) (y + dy))
-        |> List.filter hasReachableEnd
+   //     |> List.filter hasReachableEnd
+        |> List.filter (latestMoveWastesTrack >> not)
 
     let countErrors (ps : PartialSolution) : int =
         let bools =
@@ -501,7 +532,7 @@ let soln = shortestPathSolver2 partialSolution1
 match soln with Some s -> printfn "found solution!"; printfn "%s" (s |> PartialSolution.toString) | None -> printfn "no solution found"
 
 
-
+printfn "total children made: %A" totalChildrenMade
 
 
 
