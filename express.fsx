@@ -75,9 +75,24 @@ type Board = Board of FixedCell array array
             row.ToCharArray() |> Array.map FixedCell.Parse
         board |> Array.map parseRow |> Board
         
+    member this.Height = match this with Board b -> b.Length
+
+    member this.Width = match this with Board b -> b.[0].Length
+      
+    member this.CoordsOnEdge coords =
+        let x, y = coords
+        [
+            x = 0, Up
+            x = this.Height - 1, Down
+            y = 0, Left
+            y = this.Width - 1, Right
+        ]
+        |> List.choose (fun (b, v) -> if b then Some v else None)
+        |> Set.ofList
+    
     member this.IsValidSquare (x, y) =
         let board = match this with Board b -> b
-        x >= 0 && y >= 0 && x < board.Length && y < board.[0].Length
+        x >= 0 && y >= 0 && x < this.Height && y < this.Width
 
     member this.Find p =
         let arrayfind predicate b =
@@ -88,8 +103,12 @@ type Board = Board of FixedCell array array
     member this.TrainEntry =
         this.Find (function TrainEntry -> Some () | _ -> None) |> Seq.exactlyOne |> fst
 
-    member this.TrainExits =
-        this.Find (function TrainExit -> Some () | _ -> None)  |> Seq.map fst
+    member this.TrainExit =
+        this.Find (function TrainExit -> Some () | _ -> None)  |> Seq.exactlyOne |> fst
+
+    member this.TrainEntryOnEdges = this.TrainEntry |> this.CoordsOnEdge
+
+    member this.TrainExitOnEdges = this.TrainExit |> this.CoordsOnEdge
 
     member this.Aliens =
         this.Find (function Alien(x) -> Some x | _ -> None)
@@ -110,6 +129,8 @@ type PartialSolution =
         Path : ((int * int) * AlienType option * int) array
         RemainingAliens : Map<int*int,AlienType>
         RemainingBoxes : Map<int*int,AlienType>
+        PathTouchedEdge : Set<Direction>
+        Parent : PartialSolution option
     }
 
 module Sim =
@@ -162,9 +183,6 @@ let mutable totalChildrenMade = 0
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
-
-
-
     let getBoard (ps : PartialSolution) = ps.Board
     let getPath (ps : PartialSolution) : (int * int) array =
         ps.Path |> Array.map (fun (a, _, _) -> a)
@@ -176,22 +194,35 @@ module PartialSolution =
         ps.Path |> Array.map (fun (_, _, c) -> c)
     let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
     let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
-    
-    let makeChild coords (ps : PartialSolution) =
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain coords (ps |> getTrainState) ps.RemainingAliens ps.RemainingBoxes
+
+    let private makeInner parent trainState coords (ps : PartialSolution) =
+        let trainState, remainingAliens, remainingBoxes = Sim.runTrain coords trainState ps.RemainingAliens ps.RemainingBoxes
+
+        let pathTouchedEdge =
+            Set.union (ps.Board.CoordsOnEdge coords) ps.PathTouchedEdge
+
         {
             Board = ps.Board
             Path = Array.append ps.Path [|coords, trainState, remainingAliens.Count + remainingBoxes.Count|]
             RemainingAliens = remainingAliens
             RemainingBoxes = remainingBoxes
+            PathTouchedEdge = pathTouchedEdge
+            Parent = parent
         }
 
-    let make (board : Board) =
-        let aliens = board.Aliens |> Map.ofArray
-        let boxes  = board.Boxes |> Map.ofArray
-        let trainState, remainingAliens, remainingBoxes = Sim.runTrain board.TrainEntry None aliens boxes
-        let transitionsRemaining = remainingAliens.Count + remainingBoxes.Count
-        { Board = board; Path = [| board.TrainEntry, trainState, transitionsRemaining |]; RemainingAliens = remainingAliens; RemainingBoxes = remainingBoxes }
+    let makeChild coords ps =
+        makeInner (Some ps) (getTrainState ps) coords ps
+
+    let makeEmpty (board : Board) =
+        {
+            Board = board
+            Path = Array.empty
+            RemainingAliens = board.Aliens |> Map.ofArray
+            RemainingBoxes = board.Boxes |> Map.ofArray
+            PathTouchedEdge = Set.empty
+            Parent = None
+        }
+        |> makeInner None None board.TrainEntry
         
     let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
         let getDirection (x, y) (x', y') =
@@ -244,8 +275,16 @@ module PartialSolution =
             let row2 = r |> Array.fold (fun s (CellGraphic(_, _, _, d, e, f, _, _, _)) -> sprintf "%s%c%c%c" s d e f) ""
             let row3 = r |> Array.fold (fun s (CellGraphic(_, _, _, _, _, _, g, h, i)) -> sprintf "%s%c%c%c" s g h i) ""
             [|row1; row2; row3|]
+
+        let preamble =
+            [|
+                sprintf "track: %A" (getPath ps)
+                sprintf "edges touched: %A" (ps.PathTouchedEdge)
+            |]
+
         let rows = ps |> toGraphicWithOverrides overrides |> Array.collect doRow
-        Array.fold (fun a b -> sprintf "%s%s%s" a Environment.NewLine b) (sprintf "track: %A" (getPath ps)) rows
+        
+        Array.concat [preamble; rows] |> Seq.reduce (fun a b -> sprintf "%s%s%s" a Environment.NewLine b)
 
     let toString = toStringWithOverrides Map.empty
   
@@ -309,6 +348,49 @@ module PartialSolution =
 
         ret
 
+    let latestMoveFailsDividedBoard (ps : PartialSolution) =
+        match ps.Parent with
+        | None -> false
+        | Some parent1 ->
+            match parent1.Parent with
+            | None -> false
+            | Some parent2 ->
+                let edgesNewlyTouchedByPreviousMove = Set.difference parent1.PathTouchedEdge parent2.PathTouchedEdge
+                let newDivision =
+                        // Up represents Up-Down axis here and Left represents Left-Right
+                    match Set.toList edgesNewlyTouchedByPreviousMove with
+                    | [] ->
+                        None
+                    | [d] when (d = Up    && parent2.PathTouchedEdge.Contains Down) ->
+                        Some Up
+                    | [d] when (d = Down  && parent2.PathTouchedEdge.Contains Up) ->
+                        Some Up
+                    | [d] when (d = Left  && parent2.PathTouchedEdge.Contains Right) ->
+                        Some Left
+                    | [d] when (d = Right && parent2.PathTouchedEdge.Contains Left) ->
+                        Some Left
+                    | [_] ->
+                        None
+                    | x ->
+                        failwithf "logic error 1: %A" x
+
+                let path = ps |> getPath
+                let x1, y1 = path.[path.Length - 1]
+                let x2, y2 = path.[path.Length - 2]
+                
+                let ret = match newDivision with
+                | None -> false
+                | Some Left ->
+                    (x1 - x2 < 0 && ps.Board.TrainExitOnEdges.Contains Down) ||
+                    (x1 - x2 > 0 && ps.Board.TrainExitOnEdges.Contains Up)
+                | Some Up ->
+                    (y1 - y2 < 0 && ps.Board.TrainExitOnEdges.Contains Right) ||
+                    (y1 - y2 > 0 && ps.Board.TrainExitOnEdges.Contains Left)
+                | _ -> 
+                    failwith "logic error 2"
+
+                ret
+
     let hasReachableEnd ps =
         let trackset = ps |> getPath |> Set.ofArray
 
@@ -365,16 +447,15 @@ module PartialSolution =
         directionVectors
         |> List.choose (fun (dx, dy) -> ps |> tryAddTrack (x + dx) (y + dy))
    //     |> List.filter hasReachableEnd
+        |> List.filter (latestMoveFailsDividedBoard >> not)
         |> List.filter (latestMoveWastesTrack >> not)
 
     let countErrors (ps : PartialSolution) : int =
         let bools =
             [
-                (getTrainState ps) <> None
                 isComplete ps |> not
             ]
-            |> List.map (function true -> 1 | false -> 0)
-            |> List.sum
+            |> List.sumBy (function true -> 1 | false -> 0)
         let ints = 
             [
                 (getRemainingAliens ps).Count
@@ -383,8 +464,8 @@ module PartialSolution =
             |> List.sum
         bools + ints
 
-    let testCompleteSolution (s : PartialSolution) : bool =
-        countErrors s = 0
+    let testCompleteSolution (ps : PartialSolution) : bool =
+        countErrors ps = 0 && (getTrainState ps) = None
 
     let doTestCompleteSolution (s : PartialSolution) : bool =
         printfn "doTestCompleteSolution"
@@ -524,7 +605,7 @@ let andromeda11 =
 
 
 
-let partialSolution1 = andromeda11 |> Board.Parse |> PartialSolution.make
+let partialSolution1 = andromeda11 |> Board.Parse |> PartialSolution.makeEmpty
 
 partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
