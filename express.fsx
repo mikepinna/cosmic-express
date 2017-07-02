@@ -43,30 +43,70 @@ type PartialCell =
     | Fixed of FixedCell
     | Track
 
-        
-type Direction = Up | Down | Left | Right with
-    member this.Invert =
-        match this with Up -> Down | Down -> Up | Left -> Right | Right -> Left
-    member this.V =
-        match this with Up -> -1,0 | Down -> 1,0 | Left -> 0,-1 | Right -> 0,1
+type Coordinate =
+    { 
+        X : int
+        Y : int
+    }
 
-let directionVectors = [ Left.V ; Right.V ; Up.V ; Down.V ]
+type Direction =
+    {
+        DX : int
+        DY : int
+    }
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Direction =
+    let make dx dy =
+        match dx, dy with
+        | -1, 0 | +1, 0 | 0, -1 | 0, +1 -> {DX=dx; DY=dy}
+        | _ -> failwithf "invalid delta %d %d" dx dy
+
+    let Up =
+        {DX = -1; DY = 0}
+    let Down =
+        {DX = +1; DY = 0}
+    let Left =
+        {DX = 0; DY = -1}
+    let Right =
+        {DX = 0; DY = +1}
+
+    let invert (d : Direction) =
+        {DX = -d.DX; DY = -d.DY}
+
+    let fromCoordinateDelta (c1 : Coordinate) (c2 : Coordinate) =
+        make (c2.X - c1.X) (c2.Y - c1.Y)
+        
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Coordinate =
+    let addDirection (d : Direction) (c : Coordinate) =
+        {
+            X = c.X + d.DX
+            Y = c.Y + d.DY
+        }
+
+let directionVectors = [ Direction.Left ; Direction.Right ; Direction.Up ; Direction.Down ]
 
 let trackGraphics (n : int) =
     let raw c = 
         [
-            Up, Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
-            Up, Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
-            Up, Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
-            Down, Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
-            Down, Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
-            Left, Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
+            Direction.Up, Direction.Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
+            Direction.Up, Direction.Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
+            Direction.Up, Direction.Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
+            Direction.Down, Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
+            Direction.Down, Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
+            Direction.Left, Direction.Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
         ]
     
     let c =
         //match trainState with None -> '.' | Some(AlienType(alien)) -> alien
         n.ToString() |> Seq.last
     raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+
+type RelationBoard =
+    { 
+        Segments : Map<Coordinate, Coordinate list>
+    }
 
 type Board = Board of FixedCell array array
     with
@@ -79,24 +119,23 @@ type Board = Board of FixedCell array array
 
     member this.Width = match this with Board b -> b.[0].Length
       
-    member this.CoordsOnEdge coords =
-        let x, y = coords
+    member this.CoordsOnEdge (coords : Coordinate) =
         [
-            x = 0, Up
-            x = this.Height - 1, Down
-            y = 0, Left
-            y = this.Width - 1, Right
+            coords.X = 0, Direction.Up
+            coords.X = this.Height - 1, Direction.Down
+            coords.Y = 0, Direction.Left
+            coords.Y = this.Width - 1, Direction.Right
         ]
         |> List.choose (fun (b, v) -> if b then Some v else None)
         |> Set.ofList
     
-    member this.IsValidSquare (x, y) =
+    member this.IsValidSquare (c : Coordinate) =
         let board = match this with Board b -> b
-        x >= 0 && y >= 0 && x < this.Height && y < this.Width
+        c.X >= 0 && c.Y >= 0 && c.X < this.Height && c.Y < this.Width
 
     member this.Find p =
         let arrayfind predicate b =
-            let findInRow i = Array.mapi(fun j cell -> predicate cell |> Option.map (fun x -> ((i, j), x))) >> Array.choose id
+            let findInRow i = Array.mapi(fun j cell -> predicate cell |> Option.map (fun x -> ({X=i;Y=j}, x))) >> Array.choose id
             b |> Array.mapi findInRow |> Array.concat
         match this with Board b -> b |> arrayfind p
     
@@ -121,21 +160,26 @@ type Board = Board of FixedCell array array
 
 
 
-type Path = (int * int) array
+//type Path = (int * int) array
+
+type TrainState =
+    {
+        Alien : AlienType option
+    }
 
 type PartialSolution =
     {
         Board : Board
-        Path : ((int * int) * AlienType option * int) array
-        RemainingAliens : Map<int*int,AlienType>
-        RemainingBoxes : Map<int*int,AlienType>
+        Path : (Coordinate * TrainState * int) array
+        RemainingAliens : Map<Coordinate,AlienType>
+        RemainingBoxes : Map<Coordinate,AlienType>
         PathTouchedEdge : Set<Direction>
         Parent : PartialSolution option
     }
 
 module Sim =
-    let dropAlien x y (trainState : AlienType option) (boxes : Map<int*int,AlienType>) =
-        match trainState with
+    let dropAlien (c : Coordinate) (trainState : TrainState) (boxes : Map<Coordinate,AlienType>) =
+        match trainState.Alien with
         | None ->
             trainState, boxes
         | Some ts ->
@@ -143,19 +187,18 @@ module Sim =
                 match dirs with
                 | [] ->
                     trainState, boxes
-                | (dx,dy)::dirs' ->
-                    let x' = x + dx
-                    let y' = y + dy
-                    if boxes.TryFind(x', y') = Some ts
+                | dir::dirs' ->
+                    let c' = c |> Coordinate.addDirection dir
+                    if boxes.TryFind c' = Some ts
                     then
-                        None, boxes.Remove(x', y')
+                        {Alien = None}, boxes.Remove c'
                     else
                         dropIter dirs'
 
             dropIter directionVectors
 
-    let getAlien x y (trainState : AlienType option) (aliens : Map<int*int,AlienType>) =
-        match trainState with
+    let getAlien (c : Coordinate) (trainState : TrainState) (aliens : Map<Coordinate,AlienType>) =
+        match trainState.Alien with
         | Some _ ->
             trainState, aliens
         | None ->
@@ -163,20 +206,19 @@ module Sim =
                 match dirs with
                 | [] ->
                     trainState, aliens
-                | (dx,dy)::dirs' ->
-                    let x' = x + dx
-                    let y' = y + dy
-                    match aliens.TryFind(x', y') with
+                | dir::dirs' ->
+                    let c' = c |> Coordinate.addDirection dir
+                    match aliens.TryFind c' with
                     | None ->
                         getIter dirs'
                     | Some a ->
-                        Some a, aliens.Remove(x', y')
+                        {Alien = Some a}, aliens.Remove c'
 
             getIter directionVectors
 
-    let runTrain (x,y) (trainState : AlienType option) (aliens : Map<int*int,AlienType>) (boxes : Map<int*int,AlienType>) =
-        let trainState, boxes  = dropAlien x y trainState boxes
-        let trainState, aliens = getAlien  x y trainState aliens
+    let runTrain c (trainState : TrainState) (aliens : Map<Coordinate,AlienType>) (boxes : Map<Coordinate,AlienType>) =
+        let trainState, boxes  = dropAlien c trainState boxes
+        let trainState, aliens = getAlien  c trainState aliens
         trainState, aliens, boxes
 
 let mutable totalChildrenMade = 0
@@ -184,18 +226,18 @@ let mutable totalChildrenMade = 0
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module PartialSolution =
     let getBoard (ps : PartialSolution) = ps.Board
-    let getPath (ps : PartialSolution) : (int * int) array =
+    let getPath (ps : PartialSolution) : Coordinate array =
         ps.Path |> Array.map (fun (a, _, _) -> a)
-    let getTrainState (ps : PartialSolution) : AlienType option =
+    let getTrainState (ps : PartialSolution) : TrainState =
         ps.Path |> Array.last |> (fun (_, b, _) -> b)
-    let getPathWithTrainState (ps : PartialSolution) : ((int * int) * AlienType option) array =
+    let getPathWithTrainState (ps : PartialSolution) : (Coordinate * TrainState) array =
         ps.Path |> Array.map (fun (a, b, _) -> (a, b))
     let getTransitionsRemaining (ps : PartialSolution) : int array =
         ps.Path |> Array.map (fun (_, _, c) -> c)
     let getRemainingAliens (ps : PartialSolution) = ps.RemainingAliens
     let getRemainingBoxes (ps : PartialSolution) = ps.RemainingBoxes
 
-    let private makeInner parent trainState coords (ps : PartialSolution) =
+    let private makeInner parent (trainState : TrainState) coords (ps : PartialSolution) =
         let trainState, remainingAliens, remainingBoxes = Sim.runTrain coords trainState ps.RemainingAliens ps.RemainingBoxes
 
         let pathTouchedEdge =
@@ -222,29 +264,21 @@ module PartialSolution =
             PathTouchedEdge = Set.empty
             Parent = None
         }
-        |> makeInner None None board.TrainEntry
+        |> makeInner None {Alien = None} board.TrainEntry
         
-    let toGraphicWithOverrides (overrides : Map<int*int,CellGraphic>) ps =
-        let getDirection (x, y) (x', y') =
-            match (x'-x, y'-y) with
-            | v when v = Left.V  -> Left
-            | v when v = Right.V -> Right
-            | v when v = Up.V    -> Up
-            | v when v = Down.V  -> Down
-            | _ -> failwithf "getDirection: illegal move from (%d,%d) to (%d,%d)" x y x' y'
-        
+    let toGraphicWithOverrides (overrides : Map<Coordinate,CellGraphic>) ps =
         //printfn "this.Path = %A" this.Path
         // make a list of cells the track goes through with the direction from which the train enters
         let trackEntries =
             getPath ps
             |> Array.pairwise
-            |> Array.map (fun ((curr), (next)) -> next, getDirection next curr)
+            |> Array.map (fun ((curr), (next)) -> next, Direction.fromCoordinateDelta next curr)
         //printfn "trackEntries = %A" trackEntries
         // make a list of cells the track goes through with the direction from which it enters AND leaves
         let trackEntriesAndExits =
             trackEntries
             |> Array.pairwise
-            |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, exit.Invert)
+            |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, Direction.invert exit)
         //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
         // convert to graphics and put in a map for querying
         let transitionRemainings = getTransitionsRemaining ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
@@ -258,14 +292,14 @@ module PartialSolution =
 
         let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
 
-        let makeNonTransparent (x, y) (g: CellGraphic option) =
-            match g, trackAsGraphics.TryFind(x, y) with
-            | None, None -> match overrides.TryFind(x,y) with Some q -> q | None -> CellGraphic.make('.')
+        let makeNonTransparent c (g: CellGraphic option) =
+            match g, trackAsGraphics.TryFind c with
+            | None, None -> match overrides.TryFind c with Some q -> q | None -> CellGraphic.make('.')
             | Some q, None -> q
             | None, Some q -> q
-            | Some _, Some _ -> failwithf "track overlaps with board at (%d,%d)" x y
+            | Some _, Some _ -> failwithf "track overlaps with board at %A" c
 
-        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent (x, y)))
+        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent {X=x; Y=y}))
         
     let toGraphic = toGraphicWithOverrides Map.empty
         
@@ -295,14 +329,14 @@ module PartialSolution =
         then
             printfn "%s" (ps |> toString)
     
-    let tryAddTrack x y ps =
+    let tryAddTrack c ps =
         match getBoard ps with
         | Board board ->
-            if not (ps.Board.IsValidSquare(x, y)) then None else
+            if not (ps.Board.IsValidSquare c) then None else
             let ok =
-                match board.[x].[y] with
+                match board.[c.X].[c.Y] with
                 | Empty ->
-                    getPath ps |> Array.contains (x,y) |> not
+                    getPath ps |> Array.contains c |> not
                 | TrainExit ->
                     true
                 | _ ->
@@ -310,13 +344,13 @@ module PartialSolution =
             if ok
             then
                 totalChildrenMade <- totalChildrenMade + 1
-                Some <| makeChild (x,y) ps
+                Some <| makeChild c ps
             else
                 None
 
     let isComplete ps =
-        let (x, y) = ps |> getPath |> Array.last
-        match getBoard ps with Board(cells) -> cells.[x].[y] = TrainExit
+        let c = ps |> getPath |> Array.last
+        match getBoard ps with Board(cells) -> cells.[c.X].[c.Y] = TrainExit
 
     let latestMoveWastesTrack ps = 
         //printfn ""
@@ -325,7 +359,7 @@ module PartialSolution =
         //printfn "transitionsRemaining = %A" transitionsRemaining
         let transitionsRemainingAtEnd = transitionsRemaining |> Array.last
         //printfn "transitionsRemainingAtEnd = %A" transitionsRemainingAtEnd
-        let x, y = ps |> getPath |> Array.last
+        let c = ps |> getPath |> Array.last
         //printfn "x, y = %A, %A" x y
         let transitionsRemainingMap =
             ps.Path
@@ -335,7 +369,7 @@ module PartialSolution =
         //printfn "transitionsRemainingMap = %A" transitionsRemainingMap
         let neighbours = 
             directionVectors
-            |> List.map (fun (dx, dy) -> x+dx, y+dy)
+            |> List.map (fun d -> Coordinate.addDirection d c)
         //printfn "neighbours = %A" neighbours
         let transitionsRemainingAtNeighbouringTrack =
             neighbours
@@ -361,31 +395,31 @@ module PartialSolution =
                     match Set.toList edgesNewlyTouchedByPreviousMove with
                     | [] ->
                         None
-                    | [d] when (d = Up    && parent2.PathTouchedEdge.Contains Down) ->
-                        Some Up
-                    | [d] when (d = Down  && parent2.PathTouchedEdge.Contains Up) ->
-                        Some Up
-                    | [d] when (d = Left  && parent2.PathTouchedEdge.Contains Right) ->
-                        Some Left
-                    | [d] when (d = Right && parent2.PathTouchedEdge.Contains Left) ->
-                        Some Left
+                    | [d] when (d = Direction.Up    && parent2.PathTouchedEdge.Contains Direction.Down) ->
+                        Some Direction.Up
+                    | [d] when (d = Direction.Down  && parent2.PathTouchedEdge.Contains Direction.Up) ->
+                        Some Direction.Up
+                    | [d] when (d = Direction.Left  && parent2.PathTouchedEdge.Contains Direction.Right) ->
+                        Some Direction.Left
+                    | [d] when (d = Direction.Right && parent2.PathTouchedEdge.Contains Direction.Left) ->
+                        Some Direction.Left
                     | [_] ->
                         None
                     | x ->
                         failwithf "logic error 1: %A" x
 
                 let path = ps |> getPath
-                let x1, y1 = path.[path.Length - 1]
-                let x2, y2 = path.[path.Length - 2]
+                let c1 = path.[path.Length - 1]
+                let c2 = path.[path.Length - 2]
                 
                 let ret = match newDivision with
                 | None -> false
-                | Some Left ->
-                    (x1 - x2 < 0 && ps.Board.TrainExitOnEdges.Contains Down) ||
-                    (x1 - x2 > 0 && ps.Board.TrainExitOnEdges.Contains Up)
-                | Some Up ->
-                    (y1 - y2 < 0 && ps.Board.TrainExitOnEdges.Contains Right) ||
-                    (y1 - y2 > 0 && ps.Board.TrainExitOnEdges.Contains Left)
+                | Some d when d = Direction.Left ->
+                    (c1.X - c2.X < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Down) ||
+                    (c1.X - c2.X > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Up)
+                | Some d when d = Direction.Up ->
+                    (c1.Y - c2.Y < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Right) ||
+                    (c1.Y - c2.Y > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Left)
                 | _ -> 
                     failwith "logic error 2"
 
@@ -397,7 +431,7 @@ module PartialSolution =
         //printfn "check reachability for board"
         //printfn "%s" (this.ToString())
         let pathEnd = ps |> getPath |> Array.last 
-        let rec iter (surrounded : Set<int*int>) (todo : Set<int*int>) =
+        let rec iter (surrounded : Set<Coordinate>) (todo : Set<Coordinate>) =
         
             if todo.IsEmpty
             then
@@ -408,7 +442,7 @@ module PartialSolution =
                 let b = match getBoard ps with Board b -> b
                 //printfn "first = %A" first
                 match first with
-                | (x, y) when b.[x].[y] = TrainExit ->
+                | c when b.[c.X].[c.Y] = TrainExit ->
                     //printfn "%s" "// found end"
                     true
                 | h when surrounded.Contains h ->
@@ -417,18 +451,18 @@ module PartialSolution =
                 | h when h <> pathEnd && trackset.Contains h ->
                     //printfn "%s" "// item clashes with track so move on"
                     iter surrounded (Set.remove h todo)
-                | (x, y) when b.[x].[y] = Empty ->
+                | c when b.[c.X].[c.Y] = Empty ->
                     //printfn "%s" "// expand neighbours and add this one to surrounded list"
                     let todo' =
                         directionVectors
-                        |> List.map (fun (dx,dy) -> x+dx, y+dy)
+                        |> List.map (fun d -> Coordinate.addDirection d c)
                         |> List.filter (getBoard ps).IsValidSquare
                         |> List.filter (surrounded.Contains >> not)
                         |> Set.ofList
                         |> Set.union todo
-                        |> Set.remove (x,y)
+                        |> Set.remove c
                     
-                    let surrounded' = Set.add (x, y) surrounded
+                    let surrounded' = Set.add c surrounded
                     iter surrounded' todo'
                 | h ->
                     //printfn "%s" "// this item tramples on a bit of board, skip it"
@@ -443,9 +477,9 @@ module PartialSolution =
     let children ps =
         debug ps
         if isComplete ps then failwith "can't get children from complete board"
-        let x, y = ps |> getPath |> Array.last
+        let c = ps |> getPath |> Array.last
         directionVectors
-        |> List.choose (fun (dx, dy) -> ps |> tryAddTrack (x + dx) (y + dy))
+        |> List.choose (fun d -> ps |> tryAddTrack (Coordinate.addDirection d c))
    //     |> List.filter hasReachableEnd
         |> List.filter (latestMoveFailsDividedBoard >> not)
         |> List.filter (latestMoveWastesTrack >> not)
@@ -465,7 +499,7 @@ module PartialSolution =
         bools + ints
 
     let testCompleteSolution (ps : PartialSolution) : bool =
-        countErrors ps = 0 && (getTrainState ps) = None
+        countErrors ps = 0 && (getTrainState ps).Alien = None
 
     let doTestCompleteSolution (s : PartialSolution) : bool =
         printfn "doTestCompleteSolution"
@@ -605,7 +639,7 @@ let andromeda11 =
 
 
 
-let partialSolution1 = andromeda11 |> Board.Parse |> PartialSolution.makeEmpty
+let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.makeEmpty
 
 partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
