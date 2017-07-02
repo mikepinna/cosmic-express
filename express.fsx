@@ -76,7 +76,7 @@ module Direction =
 
     let fromCoordinateDelta (c1 : Coordinate) (c2 : Coordinate) =
         make (c2.X - c1.X) (c2.Y - c1.Y)
-        
+
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Coordinate =
     let addDirection (d : Direction) (c : Coordinate) =
@@ -102,11 +102,6 @@ let trackGraphics (n : int) =
         //match trainState with None -> '.' | Some(AlienType(alien)) -> alien
         n.ToString() |> Seq.last
     raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
-
-type RelationBoard =
-    { 
-        Segments : Map<Coordinate, Coordinate list>
-    }
 
 type Board = Board of FixedCell array array
     with
@@ -176,6 +171,86 @@ type PartialSolution =
         PathTouchedEdge : Set<Direction>
         Parent : PartialSolution option
     }
+
+
+type PartialSolution2 =
+    { 
+        Board : Board
+        Parent : PartialSolution2 option
+        NonEmptySegments : Map<Coordinate, AlienType option * Coordinate list>
+        EmptySegments : Map<Coordinate, Coordinate list>
+        UsedSquares : Set<Coordinate>
+    }
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module PartialSolution2 =
+
+    let private tryAddEmptySegment (c : Coordinate) (ps : PartialSolution2) =
+        if ps.Board.IsValidSquare c && not (ps.UsedSquares.Contains c) then
+            Some { ps with EmptySegments = ps.EmptySegments.Add(c, [c]); UsedSquares = ps.UsedSquares.Add(c) }
+        else
+            None
+
+    let private tryAddNonEmptySegment (c : Coordinate) (a : AlienType) (ps : PartialSolution2) =
+        if ps.Board.IsValidSquare c && not (ps.UsedSquares.Contains c) then
+            Some { ps with NonEmptySegments = ps.NonEmptySegments.Add(c, (Some a, [c])); UsedSquares = ps.UsedSquares.Add(c) }
+        else
+            None
+
+    let private addBoxSegments (c : Coordinate) (ps : PartialSolution2) =
+        directionVectors |> List.choose (fun dv -> tryAddEmptySegment (Coordinate.addDirection dv c) ps)
+
+    let private addAlienSegments (c : Coordinate, a : AlienType) (ps : PartialSolution2) : PartialSolution2 list =
+        directionVectors |> List.choose (fun dv -> tryAddNonEmptySegment (Coordinate.addDirection dv c) a ps)
+
+    let cartesian l1 l2 =
+        l1 |> List.collect (fun i -> l2 |> List.map (fun j -> i, j))
+
+    let make board aliens boxes =
+        let usedByAliens = aliens |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+        let usedByBoxes  = boxes  |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
+        let raw =
+            {
+                Board = board
+                Parent = None
+                NonEmptySegments = Map.empty
+                EmptySegments = Map.empty
+                UsedSquares = Set.union usedByAliens usedByBoxes
+            } |> tryAddEmptySegment board.TrainEntry |> Option.get
+
+        let withAliens =
+            aliens |> Map.toList |> List.fold (fun list alien -> list |> List.collect (addAlienSegments alien)) [raw]
+
+        let withBoxes =
+            boxes |> Map.toList |> List.fold (fun list (c,_) -> list |> List.collect (addBoxSegments c)) withAliens
+
+        withBoxes
+
+      
+    (*
+
+ideas
+
+segments are keyed by their starting coordinate and contain all other coordinates travelled through in reverse order
+in order to connect, the starting coordinate of one must be next to the end coordinate of the other
+
+nonempty segments are bits of track where an alien will be transported
+eg if an alien jumps in and right out again the start and end will be the same coordinate and the path will contain one element
+
+empty ones are where the train is moving without an alien
+
+can create child by:
+adding a new nonempty segment starting next to a remaining alien
+adding a new empty segment starting next to a remaining box
+continuing either an empty or nonempty segment
+
+the idea is that it shouldn't be too hard to determine if the segments in progress are logically incompatible
+TODO figure this out!
+
+
+    *)
+
 
 module Sim =
     let dropAlien (c : Coordinate) (trainState : TrainState) (boxes : Map<Coordinate,AlienType>) =
