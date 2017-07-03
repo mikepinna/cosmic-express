@@ -1,6 +1,45 @@
 open System
 open System.Collections.Generic
 
+type ITextBasedAdventureState<'s> =
+    abstract member Parent : 's option
+    abstract member Children : 's []
+    abstract member IsSolution : bool
+
+module TextBasedAdventure =
+    let printChild (n : int) (s : ITextBasedAdventureState<'s>) =
+        printfn "child %d" n
+        printfn "%A" <| s.ToString()
+        printfn ""
+
+    let rec iter (s : ITextBasedAdventureState<'s>) =
+        if s.IsSolution then printfn "Congratulations!  You have found a solution." else
+
+        printfn ""
+        printfn "Press 'p' to go back to parent or choose one of the following %d children:" s.Children.Length
+        Array.iteri printChild s.Children
+        let line = Console.ReadLine()
+        match line, Int32.TryParse line with
+        | "p", _ ->
+            match s.Parent with
+            | None ->
+                printfn "no parent!"
+                iter s
+            | Some p ->
+                printfn "going to parent"
+                p |> iter
+        | _, (true, n) when n < s.Children.Length ->
+            printfn "going to child %d" n
+            s.Children.[n] |> iter
+        | _ ->
+            printfn "unparseable input: %A" line
+            iter s
+
+    let run (s : ITextBasedAdventureState<'s>) =
+        printfn "initial state:"
+        printfn "%A" <| s.ToString()
+        iter s
+
 type AlienType = AlienType of char
 
 type CellGraphic = CellGraphic of char * char * char * char * char * char * char * char * char with
@@ -84,6 +123,16 @@ module Coordinate =
             X = c.X + d.DX
             Y = c.Y + d.DY
         }
+
+    /// make a list of cells the track goes through with the direction from which the train enters
+    let pathToTrackEntries = Array.pairwise >> Array.map (fun ((curr), (next)) -> next, Direction.fromCoordinateDelta next curr)
+
+    /// make a list of cells the track goes through with the direction from which it enters AND leaves
+    let pathToTrackEntriesAndExits =
+        pathToTrackEntries
+        >> Array.pairwise
+        >> Array.map (fun ((c,entry), (_,exit)) -> c, entry, Direction.invert exit)
+    
 
 let directionVectors = [ Direction.Left ; Direction.Right ; Direction.Up ; Direction.Down ]
 
@@ -172,7 +221,6 @@ type PartialSolution =
         Parent : PartialSolution option
     }
 
-
 type PartialSolution2 =
     { 
         Board : Board
@@ -225,9 +273,14 @@ module PartialSolution2 =
         let withBoxes =
             boxes |> Map.toList |> List.fold (fun list (c,_) -> list |> List.collect (addBoxSegments c)) withAliens
 
-        withBoxes
+        withBoxes |> List.toArray
 
-      
+    let children = failwith ""
+
+    let toString = failwith ""
+
+    let isSolution (ps : PartialSolution2) = false
+    
     (*
 
 ideas
@@ -340,22 +393,18 @@ module PartialSolution =
             Parent = None
         }
         |> makeInner None {Alien = None} board.TrainEntry
-        
+
     let toGraphicWithOverrides (overrides : Map<Coordinate,CellGraphic>) ps =
         //printfn "this.Path = %A" this.Path
-        // make a list of cells the track goes through with the direction from which the train enters
-        let trackEntries =
-            getPath ps
-            |> Array.pairwise
-            |> Array.map (fun ((curr), (next)) -> next, Direction.fromCoordinateDelta next curr)
+        let path = getPath ps
+
         //printfn "trackEntries = %A" trackEntries
-        // make a list of cells the track goes through with the direction from which it enters AND leaves
-        let trackEntriesAndExits =
-            trackEntries
-            |> Array.pairwise
-            |> Array.map (fun ((c,entry), (_,exit)) -> c, entry, Direction.invert exit)
         //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
         // convert to graphics and put in a map for querying
+        
+        let trackEntriesAndExits =
+            Coordinate.pathToTrackEntriesAndExits path
+        
         let transitionRemainings = getTransitionsRemaining ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
 
         let trackAsGraphics = 
@@ -387,8 +436,8 @@ module PartialSolution =
 
         let preamble =
             [|
-                sprintf "track: %A" (getPath ps)
-                sprintf "edges touched: %A" (ps.PathTouchedEdge)
+            //    sprintf "track: %A" (getPath ps)
+            //    sprintf "edges touched: %A" (ps.PathTouchedEdge)
             |]
 
         let rows = ps |> toGraphicWithOverrides overrides |> Array.collect doRow
@@ -664,6 +713,41 @@ let shortestPathSolver2 = aStarSolver (lossFunction) (fun ps -> 0)
 
 //partialSolution1 |> expand 11 |> Seq.iter (fun p -> if p.IsComplete then doTestCompleteSolution p |> ignore)
 
+type PartialSolutionGameState(ps : PartialSolution) =
+    interface ITextBasedAdventureState<PartialSolutionGameState> with
+        member this.Parent = ps.Parent |> Option.map PartialSolutionGameState
+        member this.Children = PartialSolution.children ps |> List.map PartialSolutionGameState |> List.toArray
+        member this.IsSolution = PartialSolution.isComplete ps
+    override this.ToString() = PartialSolution.toString ps
+
+
+type PartialSolution2Wrapper =
+    | PartialSolution2Root of (Board * Map<Coordinate,AlienType> * Map<Coordinate,AlienType>)
+    | PartialSolution2 of PartialSolution2
+
+type PartialSolution2GameState(psw : PartialSolution2Wrapper) =
+    let convert = PartialSolution2 >> PartialSolution2GameState
+
+    interface ITextBasedAdventureState<PartialSolution2GameState> with
+        member this.Parent =
+            match psw with
+            | PartialSolution2Root(_) -> None
+            | PartialSolution2 ps -> ps.Parent |> Option.map convert
+        member this.Children = 
+            match psw with
+            | PartialSolution2Root(board, aliens, boxes) ->
+                PartialSolution2.make board aliens boxes |> Array.map convert
+            | PartialSolution2 ps ->
+                PartialSolution2.children ps |> Array.map convert
+        member this.IsSolution = 
+            match psw with
+            | PartialSolution2Root(_) -> false
+            | PartialSolution2 ps ->
+                PartialSolution2.isSolution ps 
+    override this.ToString() = 
+            match psw with
+            | PartialSolution2Root(_) -> "PartialSolution2Root"
+            | PartialSolution2 ps -> PartialSolution2.toString ps
 
 
 let b1 =
@@ -716,13 +800,15 @@ let andromeda11 =
 
 let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.makeEmpty
 
-partialSolution1 |> PartialSolution.toString |> printfn "%s"
+partialSolution1 |> PartialSolutionGameState |> TextBasedAdventure.run
 
-let soln = shortestPathSolver2 partialSolution1  
-match soln with Some s -> printfn "found solution!"; printfn "%s" (s |> PartialSolution.toString) | None -> printfn "no solution found"
+//partialSolution1 |> PartialSolution.toString |> printfn "%s"
+
+//let soln = shortestPathSolver2 partialSolution1  
+//match soln with Some s -> printfn "found solution!"; printfn "%s" (s |> PartialSolution.toString) | None -> printfn "no solution found"
 
 
-printfn "total children made: %A" totalChildrenMade
+//printfn "total children made: %A" totalChildrenMade
 
 
 
