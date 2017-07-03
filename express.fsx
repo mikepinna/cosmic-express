@@ -149,25 +149,44 @@ module Coordinate =
     
 let directionVectors = [ Direction.Left ; Direction.Right ; Direction.Up ; Direction.Down ]
 
-let trackGraphics (n : int) =
-    let raw c = 
-        [
-            Direction.Up, Direction.Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
-            Direction.Up, Direction.Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
-            Direction.Up, Direction.Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
-            Direction.Down, Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
-            Direction.Down, Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
-            Direction.Left, Direction.Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
-        ]
-    
-    let c =
-        //match trainState with None -> '.' | Some(AlienType(alien)) -> alien
-        n.ToString() |> Seq.last
-    let map = raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+let trackGraphics =
+    let map0 c =
+        CellGraphic(' ', ' ', ' ', ' ', c, ' ', ' ', ' ', ' ')
 
-    fun (d1 : Direction) (d2 : Direction) ->
-        map.[d1, d2]
+    let map1 c =
+        let raw =
+            [
+                Direction.Up,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', ' ', ' ')
+                Direction.Down,  CellGraphic(' ', ' ', ' ', ' ', c, ' ', ' ', '|', ' ')
+                Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', ' ', ' ')
+                Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', ' ', ' ')
+            ]
+        let m = raw |> Map.ofList
+        fun d -> m |> Map.find d
 
+    let map2 c =
+        let raw = 
+            [
+                Direction.Up, Direction.Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
+                Direction.Up, Direction.Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
+                Direction.Up, Direction.Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
+                Direction.Down, Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
+                Direction.Down, Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
+                Direction.Left, Direction.Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
+            ]
+        
+        let m = raw |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+        fun d1 d2 -> m |> Map.find(d1, d2)
+
+    fun c ->
+        function
+        | TrackSingle(_) ->
+            map0 c
+        | TrackTerminator(_, d) ->
+            map1 c d
+        | TrackMiddle(_, d1, d2) ->
+            map2 c d1 d2
+        
 type Board = Board of FixedCell array array
     with
     static member Parse (board : string array) : Board =
@@ -291,9 +310,17 @@ module PartialSolution2 =
 
         withBoxes |> List.toArray
 
-    let children ps = failwith ""
+    let children (ps : PartialSolution2) : PartialSolution2 array = failwith ""
 
-    let toString ps = failwith ""
+    let toString (ps : PartialSolution2) : string =
+        let emptySegmentToGraphic (l : Coordinate list) =
+            let path = l |> List.rev |> List.toArray
+            let trackElements = path |> Coordinate.pathToTrackEntriesAndExits
+            let graphics = trackElements |> Array.map (trackGraphics 'o')
+            failwith ""
+
+        //let empty = ps.EmptySegments |> 
+        failwith ""
 
     let isSolution (ps : PartialSolution2) = false
     
@@ -420,15 +447,11 @@ module PartialSolution =
         
         let trackEntriesAndExits =
             Coordinate.pathToTrackEntriesAndExits path
-            
-        printfn "trackEntriesAndExits ="
-        printfn "%A" trackEntriesAndExits
 
         /// symbol for each step in path
         let annotations = getTransitionsRemaining ps
 
-        printfn "annotations ="
-        printfn "%A" annotations
+        let n2c (n : int) = n.ToString() |> Seq.last
 
         let trackAsGraphics = 
             match path.Length with
@@ -440,7 +463,7 @@ module PartialSolution =
                 trackEntriesAndExits
                 |> Array.zip annotations
                 |> Array.skip 1 |> Array.take (len - 2)
-                |> Array.map (function (n, TrackMiddle(c, entry, exit)) -> c, (trackGraphics n entry exit) | _ -> failwith "logic error")
+                |> Array.map (function (n, (TrackMiddle(c, entry, exit) as e)) -> c, (trackGraphics (n2c n) e) | _ -> failwith "logic error")
                 |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
