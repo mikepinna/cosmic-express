@@ -43,7 +43,7 @@ module TextBasedAdventure =
 type AlienType = AlienType of char
 
 type CellGraphic = CellGraphic of char * char * char * char * char * char * char * char * char with
-    static member make c = CellGraphic(c, c, c, c, c, c, c, c, c)
+    static member Make c = CellGraphic(c, c, c, c, c, c, c, c, c)
 
 type FixedCell =
     |    Alien of AlienType
@@ -74,9 +74,9 @@ type FixedCell =
         match this with
         | Empty ->
             None
-        | _ -> this.ToChar |> CellGraphic.make |> Some
+        | _ -> this.ToChar |> CellGraphic.Make |> Some
     static member EmptyGraphic =
-        FixedCell.Empty.ToChar |> CellGraphic.make
+        FixedCell.Empty.ToChar |> CellGraphic.Make
 
 type PartialCell =
     | Fixed of FixedCell
@@ -94,9 +94,14 @@ type Direction =
         DY : int
     }
 
+type TrackElement =
+    | TrackSingle     of Coordinate
+    | TrackTerminator of Coordinate * Direction
+    | TrackMiddle     of Coordinate * Direction * Direction
+    
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Direction =
-    let make dx dy =
+    let private make dx dy =
         match dx, dy with
         | -1, 0 | +1, 0 | 0, -1 | 0, +1 -> {DX=dx; DY=dy}
         | _ -> failwithf "invalid delta %d %d" dx dy
@@ -124,16 +129,24 @@ module Coordinate =
             Y = c.Y + d.DY
         }
 
-    /// make a list of cells the track goes through with the direction from which the train enters
-    let pathToTrackEntries = Array.pairwise >> Array.map (fun ((curr), (next)) -> next, Direction.fromCoordinateDelta next curr)
-
-    /// make a list of cells the track goes through with the direction from which it enters AND leaves
-    let pathToTrackEntriesAndExits =
-        pathToTrackEntries
-        >> Array.pairwise
-        >> Array.map (fun ((c,entry), (_,exit)) -> c, entry, Direction.invert exit)
+    /// make a list of cells the track goes through with the direction from which it enters AND leaves (rename to pathToTrackElements)
+    let pathToTrackEntriesAndExits (path : Coordinate array) : TrackElement array =
+        match path.Length with
+        | 0 -> failwith "empty path!"
+        | 1 -> path |> Array.map TrackSingle
+        | _ ->
+            // both these arrays end up being 1 element shorter due to pairwise comparison
+            let entranceDirections = path |> Array.pairwise |> Array.map (fun (curr, next) -> Direction.fromCoordinateDelta next curr)
+            let exitDirections = entranceDirections |> Array.map Direction.invert
+            let first = TrackTerminator(Array.head path, Array.head exitDirections)
+            let last  = TrackTerminator(Array.last path, Array.last entranceDirections)
+            let middle =
+                let middlePath = path |> Array.skip 1 |> Array.take (path.Length - 2)
+                let middleEntrances = entranceDirections |> Array.take (path.Length - 2)
+                let middleExits = exitDirections |> Array.skip 1
+                Array.zip3 middlePath middleEntrances middleExits |> Array.map (fun (p, n, x) -> TrackMiddle(p, n, x))
+            Array.concat [[|first|]; middle; [|last|]]
     
-
 let directionVectors = [ Direction.Left ; Direction.Right ; Direction.Up ; Direction.Down ]
 
 let trackGraphics (n : int) =
@@ -150,7 +163,10 @@ let trackGraphics (n : int) =
     let c =
         //match trainState with None -> '.' | Some(AlienType(alien)) -> alien
         n.ToString() |> Seq.last
-    raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+    let map = raw c |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+
+    fun (d1 : Direction) (d2 : Direction) ->
+        map.[d1, d2]
 
 type Board = Board of FixedCell array array
     with
@@ -275,9 +291,9 @@ module PartialSolution2 =
 
         withBoxes |> List.toArray
 
-    let children = failwith ""
+    let children ps = failwith ""
 
-    let toString = failwith ""
+    let toString ps = failwith ""
 
     let isSolution (ps : PartialSolution2) = false
     
@@ -404,21 +420,35 @@ module PartialSolution =
         
         let trackEntriesAndExits =
             Coordinate.pathToTrackEntriesAndExits path
-        
-        let transitionRemainings = getTransitionsRemaining ps |> Array.skip 1 |> Array.take (trackEntriesAndExits.Length)
+            
+        printfn "trackEntriesAndExits ="
+        printfn "%A" trackEntriesAndExits
+
+        /// symbol for each step in path
+        let annotations = getTransitionsRemaining ps
+
+        printfn "annotations ="
+        printfn "%A" annotations
 
         let trackAsGraphics = 
-            trackEntriesAndExits
-            |> Array.zip transitionRemainings
-            |> Array.map (fun (n, (c, entry, exit)) -> c, (trackGraphics n).[entry, exit])
-            |> Map.ofArray
+            match path.Length with
+            | 0 ->
+                failwith "empty path"
+            | 1 ->
+                Map.empty
+            | len ->
+                trackEntriesAndExits
+                |> Array.zip annotations
+                |> Array.skip 1 |> Array.take (len - 2)
+                |> Array.map (function (n, TrackMiddle(c, entry, exit)) -> c, (trackGraphics n entry exit) | _ -> failwith "logic error")
+                |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
         let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
 
         let makeNonTransparent c (g: CellGraphic option) =
             match g, trackAsGraphics.TryFind c with
-            | None, None -> match overrides.TryFind c with Some q -> q | None -> CellGraphic.make('.')
+            | None, None -> match overrides.TryFind c with Some q -> q | None -> CellGraphic.Make('.')
             | Some q, None -> q
             | None, Some q -> q
             | Some _, Some _ -> failwithf "track overlaps with board at %A" c
@@ -536,16 +566,17 @@ module PartialSolution =
                 let c1 = path.[path.Length - 1]
                 let c2 = path.[path.Length - 2]
                 
-                let ret = match newDivision with
-                | None -> false
-                | Some d when d = Direction.Left ->
-                    (c1.X - c2.X < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Down) ||
-                    (c1.X - c2.X > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Up)
-                | Some d when d = Direction.Up ->
-                    (c1.Y - c2.Y < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Right) ||
-                    (c1.Y - c2.Y > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Left)
-                | _ -> 
-                    failwith "logic error 2"
+                let ret =
+                    match newDivision with
+                    | None -> false
+                    | Some d when d = Direction.Left ->
+                        (c1.X - c2.X < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Down) ||
+                        (c1.X - c2.X > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Up)
+                    | Some d when d = Direction.Up ->
+                        (c1.Y - c2.Y < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Right) ||
+                        (c1.Y - c2.Y > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Left)
+                    | _ -> 
+                        failwith "logic error 2"
 
                 ret
 
@@ -666,9 +697,12 @@ let shortestPathSolver (ps : PartialSolution) =
 type 'a Comparable = Comparable of 'a * ('a -> 'a -> int) with
     interface IComparable with
         member this.CompareTo(other : obj) =
-            match this, (other:?> 'a Comparable) with
+            match this, (other :?> 'a Comparable) with
             | Comparable(t, cmp), Comparable(o, _) -> cmp t o
     member this.Value = match this with Comparable (x,_) -> x
+
+    override this.Equals(x) = failwith ""
+    override this.GetHashCode() = failwith ""
 
 let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : PartialSolution) =
     let gh ps = g ps + h ps
