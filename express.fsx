@@ -42,46 +42,6 @@ module TextBasedAdventure =
 
 type AlienType = AlienType of char
 
-type CellGraphic = CellGraphic of char * char * char * char * char * char * char * char * char with
-    static member Make c = CellGraphic(c, c, c, c, c, c, c, c, c)
-
-type FixedCell =
-    |    Alien of AlienType
-    |    Box of AlienType
-    |    TrainEntry
-    |    TrainExit
-    |    Empty
-    with
-    static member private mapping =
-        [
-            'a', Alien(AlienType('a'))
-            'A', Box(AlienType('a'))
-            'b', Alien(AlienType('b'))
-            'B', Box(AlienType('b'))
-            'n', TrainEntry
-            'x', TrainExit
-            ' ', Empty
-        ]
-    static member private str2val =
-        FixedCell.mapping |> Map.ofList
-    static member private val2str =
-        FixedCell.mapping |> List.map (fun (a,b) -> (b,a)) |> Map.ofList
-    static member Parse x =
-        FixedCell.str2val.Item x
-    member this.ToChar =
-        FixedCell.val2str.Item this
-    member this.ToTransparentGraphic =
-        match this with
-        | Empty ->
-            None
-        | _ -> this.ToChar |> CellGraphic.Make |> Some
-    static member EmptyGraphic =
-        FixedCell.Empty.ToChar |> CellGraphic.Make
-
-type PartialCell =
-    | Fixed of FixedCell
-    | Track
-
 type Coordinate =
     { 
         X : int
@@ -129,8 +89,8 @@ module Coordinate =
             Y = c.Y + d.DY
         }
 
-    /// make a list of cells the track goes through with the direction from which it enters AND leaves (rename to pathToTrackElements)
-    let pathToTrackEntriesAndExits (path : Coordinate array) : TrackElement array =
+    /// make a list of cells the track goes through with the direction from which it enters AND leaves
+    let pathToTrackElements (path : Coordinate array) : TrackElement array =
         match path.Length with
         | 0 -> failwith "empty path!"
         | 1 -> path |> Array.map TrackSingle
@@ -149,44 +109,96 @@ module Coordinate =
     
 let directionVectors = [ Direction.Left ; Direction.Right ; Direction.Up ; Direction.Down ]
 
-let trackGraphics =
-    let map0 c =
-        CellGraphic(' ', ' ', ' ', ' ', c, ' ', ' ', ' ', ' ')
+type Sprite = Sprite of char * char * char * char * char * char * char * char * char
 
-    let map1 c =
-        let raw =
-            [
-                Direction.Up,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', ' ', ' ')
-                Direction.Down,  CellGraphic(' ', ' ', ' ', ' ', c, ' ', ' ', '|', ' ')
-                Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', ' ', ' ')
-                Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', ' ', ' ')
-            ]
-        let m = raw |> Map.ofList
-        fun d -> m |> Map.find d
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Sprite =
+    let makeConstant c = Sprite(c, c, c, c, c, c, c, c, c)
+    let make =
+        let map0 c =
+            Sprite(' ', ' ', ' ', ' ', c, ' ', ' ', ' ', ' ')
 
-    let map2 c =
-        let raw = 
-            [
-                Direction.Up, Direction.Down,    CellGraphic(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
-                Direction.Up, Direction.Left,    CellGraphic(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
-                Direction.Up, Direction.Right,   CellGraphic(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
-                Direction.Down, Direction.Left,  CellGraphic(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
-                Direction.Down, Direction.Right, CellGraphic(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
-                Direction.Left, Direction.Right, CellGraphic(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
-            ]
-        
-        let m = raw |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
-        fun d1 d2 -> m |> Map.find(d1, d2)
+        let map1 c =
+            let raw =
+                [
+                    Direction.Up,    Sprite(' ', '|', ' ', ' ', c, ' ', ' ', ' ', ' ')
+                    Direction.Down,  Sprite(' ', ' ', ' ', ' ', c, ' ', ' ', '|', ' ')
+                    Direction.Left,  Sprite(' ', ' ', ' ', '-', c, ' ', ' ', ' ', ' ')
+                    Direction.Right, Sprite(' ', ' ', ' ', ' ', c, '-', ' ', ' ', ' ')
+                ]
+            let m = raw |> Map.ofList
+            fun d -> m |> Map.find d
 
-    fun c ->
-        function
-        | TrackSingle(_) ->
-            map0 c
-        | TrackTerminator(_, d) ->
-            map1 c d
-        | TrackMiddle(_, d1, d2) ->
-            map2 c d1 d2
-        
+        let map2 c =
+            let raw = 
+                [
+                    Direction.Up, Direction.Down,    Sprite(' ', '|', ' ', ' ', c, ' ', ' ', '|', ' ')
+                    Direction.Up, Direction.Left,    Sprite(' ', '|', ' ', '-', c, ' ', ' ', ' ', ' ')
+                    Direction.Up, Direction.Right,   Sprite(' ', '|', ' ', ' ', c, '-', ' ', ' ', ' ')
+                    Direction.Down, Direction.Left,  Sprite(' ', ' ', ' ', '-', c, ' ', ' ', '|', ' ')
+                    Direction.Down, Direction.Right, Sprite(' ', ' ', ' ', ' ', c, '-', ' ', '|', ' ')
+                    Direction.Left, Direction.Right, Sprite(' ', ' ', ' ', '-', c, '-', ' ', ' ', ' ')
+                ]
+            
+            let m = raw |> List.collect (fun (a, b, g) -> [(a, b), g; (b, a), g]) |> Map.ofList
+            fun d1 d2 -> m |> Map.find(d1, d2)
+
+        fun c ->
+            function
+            | TrackSingle(_) ->
+                map0 c
+            | TrackTerminator(_, d) ->
+                map1 c d
+            | TrackMiddle(_, d1, d2) ->
+                map2 c d1 d2
+            
+    let rowToStrings (r : Sprite array) =
+        let row1 = r |> Array.fold (fun s (Sprite(a, b, c, _, _, _, _, _, _)) -> sprintf "%s%c%c%c" s a b c) ""
+        let row2 = r |> Array.fold (fun s (Sprite(_, _, _, d, e, f, _, _, _)) -> sprintf "%s%c%c%c" s d e f) ""
+        let row3 = r |> Array.fold (fun s (Sprite(_, _, _, _, _, _, g, h, i)) -> sprintf "%s%c%c%c" s g h i) ""
+        [|row1; row2; row3|]
+
+    let gridToStringWithPreamble preamble spriteGrid =
+        let rows = spriteGrid |> Array.collect rowToStrings
+        Array.concat [preamble; rows] |> Seq.reduce (fun a b -> sprintf "%s%s%s" a Environment.NewLine b)
+  
+
+type FixedCell =
+    |    Alien of AlienType
+    |    Box of AlienType
+    |    TrainEntry
+    |    TrainExit
+    |    Empty
+    with
+    static member private mapping =
+        [
+            'a', Alien(AlienType('a'))
+            'A', Box(AlienType('a'))
+            'b', Alien(AlienType('b'))
+            'B', Box(AlienType('b'))
+            'n', TrainEntry
+            'x', TrainExit
+            ' ', Empty
+        ]
+    static member private str2val =
+        FixedCell.mapping |> Map.ofList
+    static member private val2str =
+        FixedCell.mapping |> List.map (fun (a,b) -> (b,a)) |> Map.ofList
+    static member Parse x =
+        FixedCell.str2val.Item x
+    member this.ToChar =
+        FixedCell.val2str.Item this
+    member this.ToTransparentGraphic =
+        match this with
+        | Empty -> None
+        | _ -> this.ToChar |> Sprite.makeConstant |> Some
+    static member EmptyGraphic =
+        FixedCell.Empty.ToChar |> Sprite.makeConstant
+
+type PartialCell =
+    | Fixed of FixedCell
+    | Track
+
 type Board = Board of FixedCell array array
     with
     static member Parse (board : string array) : Board =
@@ -234,9 +246,18 @@ type Board = Board of FixedCell array array
     member this.Boxes =
         this.Find (function Box(x) -> Some x | _ -> None)
 
-    member this.ToTransparentGraphic() : CellGraphic option array array =
+    member this.ToTransparentGraphic() : Sprite option array array =
         match this with Board b -> b |> Array.map (fun row -> row |> Array.map (fun cell -> cell.ToTransparentGraphic))
 
+    member this.ToSpriteGridWithOverlay overlay =
+        let makeNonTransparent c (g : Sprite option) =
+            match g, Map.tryFind c overlay with
+            | None, None -> Sprite.makeConstant('.')
+            | Some q, None -> q
+            | None, Some q -> q
+            | Some _, Some _ -> failwithf "track overlaps with board at %A" c
+
+        this.ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent {X=x; Y=y}))
 
 
 //type Path = (int * int) array
@@ -313,14 +334,17 @@ module PartialSolution2 =
     let children (ps : PartialSolution2) : PartialSolution2 array = failwith ""
 
     let toString (ps : PartialSolution2) : string =
-        let emptySegmentToGraphic (l : Coordinate list) =
+        let emptySegmentToSprites (l : Coordinate list) =
             let path = l |> List.rev |> List.toArray
-            let trackElements = path |> Coordinate.pathToTrackEntriesAndExits
-            let graphics = trackElements |> Array.map (trackGraphics 'o')
-            failwith ""
+            let trackElements = path |> Coordinate.pathToTrackElements
+            let sprites = trackElements |> Array.map (Sprite.make 'o')
+            Array.zip path sprites |> Map.ofArray
 
-        //let empty = ps.EmptySegments |> 
-        failwith ""
+        let mergeMaps m1 m2 = m2 |> Map.fold (fun m k v -> Map.add k v m) m1 
+        let x = ps.EmptySegments |> Map.toSeq |> Seq.map (snd >> emptySegmentToSprites) |> Seq.reduce mergeMaps
+        
+        let spriteGrid = ps.Board.ToSpriteGridWithOverlay x
+        Sprite.gridToStringWithPreamble [||] spriteGrid
 
     let isSolution (ps : PartialSolution2) = false
     
@@ -437,68 +461,40 @@ module PartialSolution =
         }
         |> makeInner None {Alien = None} board.TrainEntry
 
-    let toGraphicWithOverrides (overrides : Map<Coordinate,CellGraphic>) ps =
-        //printfn "this.Path = %A" this.Path
-        let path = getPath ps
-
-        //printfn "trackEntries = %A" trackEntries
-        //printfn "trackEntriesAndExits = %A" trackEntriesAndExits
-        // convert to graphics and put in a map for querying
-        
-        let trackEntriesAndExits =
-            Coordinate.pathToTrackEntriesAndExits path
-
-        /// symbol for each step in path
-        let annotations = getTransitionsRemaining ps
-
-        let n2c (n : int) = n.ToString() |> Seq.last
+    let toSpriteGrid ps =
+        let trackElements = ps |> getPath |> Coordinate.pathToTrackElements
 
         let trackAsGraphics = 
-            match path.Length with
+            let annotations = getTransitionsRemaining ps
+            let n2c (n : int) = n.ToString() |> Seq.last
+    
+            match trackElements.Length with
             | 0 ->
                 failwith "empty path"
             | 1 ->
                 Map.empty
             | len ->
-                trackEntriesAndExits
+                trackElements
                 |> Array.zip annotations
                 |> Array.skip 1 |> Array.take (len - 2)
-                |> Array.map (function (n, (TrackMiddle(c, entry, exit) as e)) -> c, (trackGraphics (n2c n) e) | _ -> failwith "logic error")
+                |> Array.map (function (n, (TrackMiddle(c, entry, exit) as e)) -> c, (Sprite.make (n2c n) e) | _ -> failwith "logic error")
                 |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
-        let transparentBoardGraphic = (getBoard ps).ToTransparentGraphic()
+        let board = getBoard ps
+        let overlay = trackAsGraphics
 
-        let makeNonTransparent c (g: CellGraphic option) =
-            match g, trackAsGraphics.TryFind c with
-            | None, None -> match overrides.TryFind c with Some q -> q | None -> CellGraphic.Make('.')
-            | Some q, None -> q
-            | None, Some q -> q
-            | Some _, Some _ -> failwithf "track overlaps with board at %A" c
+        board.ToSpriteGridWithOverlay overlay
 
-        (getBoard ps).ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent {X=x; Y=y}))
-        
-    let toGraphic = toGraphicWithOverrides Map.empty
-        
-    let toStringWithOverrides overrides ps =
-        let doRow (r : CellGraphic array) =
-            let row1 = r |> Array.fold (fun s (CellGraphic(a, b, c, _, _, _, _, _, _)) -> sprintf "%s%c%c%c" s a b c) ""
-            let row2 = r |> Array.fold (fun s (CellGraphic(_, _, _, d, e, f, _, _, _)) -> sprintf "%s%c%c%c" s d e f) ""
-            let row3 = r |> Array.fold (fun s (CellGraphic(_, _, _, _, _, _, g, h, i)) -> sprintf "%s%c%c%c" s g h i) ""
-            [|row1; row2; row3|]
-
+    let toString ps =
         let preamble =
             [|
             //    sprintf "track: %A" (getPath ps)
             //    sprintf "edges touched: %A" (ps.PathTouchedEdge)
             |]
 
-        let rows = ps |> toGraphicWithOverrides overrides |> Array.collect doRow
-        
-        Array.concat [preamble; rows] |> Seq.reduce (fun a b -> sprintf "%s%s%s" a Environment.NewLine b)
+        ps |> toSpriteGrid |> Sprite.gridToStringWithPreamble preamble
 
-    let toString = toStringWithOverrides Map.empty
-  
     let mutable debugCounter = 0
     let debug ps =
         debugCounter <- debugCounter + 1
