@@ -326,14 +326,38 @@ module PartialSolution2 =
                 UsedSquares = Set.union usedByAliens usedByBoxes |> Set.add board.TrainExit
             } |> tryAddEmptySegment board.TrainEntry |> Option.get
 
-
         let withAliens = board.Aliens |> Array.fold (fun list alien -> list |> List.collect (addAlienSegments alien)) [raw]
         let withAliensAndBoxes = board.Boxes |> Array.fold (fun list (c,_) -> list |> List.collect (addBoxSegments c)) withAliens
 
         withAliensAndBoxes |> List.toArray
 
-    let children (ps : PartialSolution2) : PartialSolution2 array = die "children not implemented"
+    let children (ps : PartialSolution2) : PartialSolution2 array =
+        let extendEmptySegmentAt (start : Coordinate) =
+            let list = ps.EmptySegments |> Map.find start
+            let latest = list |> List.head
 
+            directionVectors
+            |> List.map (fun v -> Coordinate.addDirection v latest)
+            |> List.filter (ps.UsedSquares.Contains >> not)
+            |> List.map (fun c -> { ps with UsedSquares = ps.UsedSquares.Add c ; EmptySegments = ps.EmptySegments.Add (start, c :: list) })
+            |> List.toArray
+            
+        let extendNonEmptySegmentAt (start : Coordinate) =
+            let alien, finished, list = ps.NonEmptySegments |> Map.find start
+            if finished then die "finished not implemented"
+            let latest = list |> List.head
+
+            directionVectors
+            |> List.map (fun v -> Coordinate.addDirection v latest)
+            |> List.filter (ps.UsedSquares.Contains >> not)
+            |> List.map (fun c -> { ps with UsedSquares = ps.UsedSquares.Add c ; NonEmptySegments = ps.NonEmptySegments.Add (start, (alien, finished, c :: list)) })
+            |> List.toArray
+
+        let emptySegmentChildren    = ps.EmptySegments    |> Map.toArray |> Array.collect (fst >> extendEmptySegmentAt)
+        let nonEmptySegmentChildren = ps.NonEmptySegments |> Map.toArray |> Array.collect (fst >> extendNonEmptySegmentAt)
+
+        Array.append emptySegmentChildren nonEmptySegmentChildren
+        
     let toString (ps : PartialSolution2) : string =
         let segmentToSprites c (l : Coordinate list) =
             let path = l |> List.rev |> List.toArray
