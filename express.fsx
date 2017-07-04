@@ -1,6 +1,8 @@
 open System
 open System.Collections.Generic
 
+let die x = printfn "die: %s" x ; failwith x
+
 type ITextBasedAdventureState<'s> =
     abstract member Parent : 's option
     abstract member Children : 's []
@@ -9,7 +11,7 @@ type ITextBasedAdventureState<'s> =
 module TextBasedAdventure =
     let printChild (n : int) (s : ITextBasedAdventureState<'s>) =
         printfn "child %d" n
-        printfn "%A" <| s.ToString()
+        printfn "%s" <| s.ToString()
         printfn ""
 
     let rec iter (s : ITextBasedAdventureState<'s>) =
@@ -64,7 +66,7 @@ module Direction =
     let private make dx dy =
         match dx, dy with
         | -1, 0 | +1, 0 | 0, -1 | 0, +1 -> {DX=dx; DY=dy}
-        | _ -> failwithf "invalid delta %d %d" dx dy
+        | _ -> die <| sprintf "invalid delta %d %d" dx dy
 
     let Up =
         {DX = -1; DY = 0}
@@ -92,7 +94,7 @@ module Coordinate =
     /// make a list of cells the track goes through with the direction from which it enters AND leaves
     let pathToTrackElements (path : Coordinate array) : TrackElement array =
         match path.Length with
-        | 0 -> failwith "empty path!"
+        | 0 -> die "empty path!"
         | 1 -> path |> Array.map TrackSingle
         | _ ->
             // both these arrays end up being 1 element shorter due to pairwise comparison
@@ -188,9 +190,10 @@ type FixedCell =
         FixedCell.str2val.Item x
     member this.ToChar =
         FixedCell.val2str.Item this
-    member this.ToTransparentGraphic =
-        match this with
-        | Empty -> None
+    member this.ToTransparentGraphic includeEntry =
+        match this, includeEntry with
+        | Empty, _ -> None
+        | TrainEntry, false -> None
         | _ -> this.ToChar |> Sprite.makeConstant |> Some
     static member EmptyGraphic =
         FixedCell.Empty.ToChar |> Sprite.makeConstant
@@ -246,18 +249,17 @@ type Board = Board of FixedCell array array
     member this.Boxes =
         this.Find (function Box(x) -> Some x | _ -> None)
 
-    member this.ToTransparentGraphic() : Sprite option array array =
-        match this with Board b -> b |> Array.map (fun row -> row |> Array.map (fun cell -> cell.ToTransparentGraphic))
+    member this.ToTransparentGraphic includeEntry : Sprite option array array =
+        match this with Board b -> b |> Array.map (fun row -> row |> Array.map (fun cell -> cell.ToTransparentGraphic includeEntry))
 
-    member this.ToSpriteGridWithOverlay overlay =
+    member this.ToSpriteGridWithOverlay includeEntry overlay =
         let makeNonTransparent c (g : Sprite option) =
             match g, Map.tryFind c overlay with
             | None, None -> Sprite.makeConstant('.')
             | Some q, None -> q
             | None, Some q -> q
-            | Some _, Some _ -> failwithf "track overlaps with board at %A" c
-
-        this.ToTransparentGraphic() |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent {X=x; Y=y}))
+            | Some x, Some y -> die <| sprintf "track overlaps with board at %A: %A vs %A" c x y
+        this.ToTransparentGraphic includeEntry |> Array.mapi(fun x row -> row |> Array.mapi(fun y cell -> cell |> makeNonTransparent {X=x; Y=y}))
 
 
 //type Path = (int * int) array
@@ -281,7 +283,7 @@ type PartialSolution2 =
     { 
         Board : Board
         Parent : PartialSolution2 option
-        NonEmptySegments : Map<Coordinate, AlienType option * Coordinate list>
+        NonEmptySegments : Map<Coordinate, AlienType * bool * Coordinate list>
         EmptySegments : Map<Coordinate, Coordinate list>
         UsedSquares : Set<Coordinate>
     }
@@ -297,7 +299,7 @@ module PartialSolution2 =
 
     let private tryAddNonEmptySegment (c : Coordinate) (a : AlienType) (ps : PartialSolution2) =
         if ps.Board.IsValidSquare c && not (ps.UsedSquares.Contains c) then
-            Some { ps with NonEmptySegments = ps.NonEmptySegments.Add(c, (Some a, [c])); UsedSquares = ps.UsedSquares.Add(c) }
+            Some { ps with NonEmptySegments = ps.NonEmptySegments.Add(c, (a, false, [c])); UsedSquares = ps.UsedSquares.Add(c) }
         else
             None
 
@@ -310,9 +312,10 @@ module PartialSolution2 =
     let cartesian l1 l2 =
         l1 |> List.collect (fun i -> l2 |> List.map (fun j -> i, j))
 
-    let make board aliens boxes =
-        let usedByAliens = aliens |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-        let usedByBoxes  = boxes  |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+    let make (board : Board) =
+
+        let usedByAliens = board.Aliens |> Seq.map fst |> Set.ofSeq
+        let usedByBoxes  = board.Boxes  |> Seq.map fst |> Set.ofSeq
 
         let raw =
             {
@@ -320,30 +323,36 @@ module PartialSolution2 =
                 Parent = None
                 NonEmptySegments = Map.empty
                 EmptySegments = Map.empty
-                UsedSquares = Set.union usedByAliens usedByBoxes
+                UsedSquares = Set.union usedByAliens usedByBoxes |> Set.add board.TrainExit
             } |> tryAddEmptySegment board.TrainEntry |> Option.get
 
-        let withAliens =
-            aliens |> Map.toList |> List.fold (fun list alien -> list |> List.collect (addAlienSegments alien)) [raw]
 
-        let withBoxes =
-            boxes |> Map.toList |> List.fold (fun list (c,_) -> list |> List.collect (addBoxSegments c)) withAliens
+        let withAliens = board.Aliens |> Array.fold (fun list alien -> list |> List.collect (addAlienSegments alien)) [raw]
+        let withAliensAndBoxes = board.Boxes |> Array.fold (fun list (c,_) -> list |> List.collect (addBoxSegments c)) withAliens
 
-        withBoxes |> List.toArray
+        withAliensAndBoxes |> List.toArray
 
-    let children (ps : PartialSolution2) : PartialSolution2 array = failwith ""
+    let children (ps : PartialSolution2) : PartialSolution2 array = die "children not implemented"
 
     let toString (ps : PartialSolution2) : string =
-        let emptySegmentToSprites (l : Coordinate list) =
+        let segmentToSprites c (l : Coordinate list) =
             let path = l |> List.rev |> List.toArray
             let trackElements = path |> Coordinate.pathToTrackElements
-            let sprites = trackElements |> Array.map (Sprite.make 'o')
+            let sprites = trackElements |> Array.map (Sprite.make c)
             Array.zip path sprites |> Map.ofArray
 
-        let mergeMaps m1 m2 = m2 |> Map.fold (fun m k v -> Map.add k v m) m1 
-        let x = ps.EmptySegments |> Map.toSeq |> Seq.map (snd >> emptySegmentToSprites) |> Seq.reduce mergeMaps
+        let emptySegmentToSprites = segmentToSprites 'o'
+        let nonEmptySegmentToSprites (AlienType(c), _, l) = segmentToSprites c l
+
+        let mergeMaps = Map.fold (fun m k v -> Map.add k v m)
+        let segmentsToSprites converter =
+            Map.toSeq >> Seq.map (snd >> converter) >> Seq.fold mergeMaps Map.empty
+
+        let emptySegmentSprites    = ps.EmptySegments    |> segmentsToSprites emptySegmentToSprites
+        let nonEmptySegmentSprites = ps.NonEmptySegments |> segmentsToSprites nonEmptySegmentToSprites
+
+        let spriteGrid = ps.Board.ToSpriteGridWithOverlay false (mergeMaps emptySegmentSprites nonEmptySegmentSprites)
         
-        let spriteGrid = ps.Board.ToSpriteGridWithOverlay x
         Sprite.gridToStringWithPreamble [||] spriteGrid
 
     let isSolution (ps : PartialSolution2) = false
@@ -470,21 +479,21 @@ module PartialSolution =
     
             match trackElements.Length with
             | 0 ->
-                failwith "empty path"
+                die "empty path"
             | 1 ->
                 Map.empty
             | len ->
                 trackElements
                 |> Array.zip annotations
                 |> Array.skip 1 |> Array.take (len - 2)
-                |> Array.map (function (n, (TrackMiddle(c, entry, exit) as e)) -> c, (Sprite.make (n2c n) e) | _ -> failwith "logic error")
+                |> Array.map (function (n, (TrackMiddle(c, entry, exit) as e)) -> c, (Sprite.make (n2c n) e) | _ -> die "logic error")
                 |> Map.ofArray
         //printfn "trackAsGraphics = %A" trackAsGraphics
 
         let board = getBoard ps
         let overlay = trackAsGraphics
 
-        board.ToSpriteGridWithOverlay overlay
+        board.ToSpriteGridWithOverlay true overlay
 
     let toString ps =
         let preamble =
@@ -551,7 +560,7 @@ module PartialSolution =
         let ret = transitionsRemainingAtNeighbouringTrack |> List.exists ((=) transitionsRemainingAtEnd)
         //printfn "ret = %A" ret
 
-        //if ret then printfn "%A" (toString ps); failwith ""
+        //if ret then printfn "%A" (toString ps); die ""
 
         ret
 
@@ -579,7 +588,7 @@ module PartialSolution =
                     | [_] ->
                         None
                     | x ->
-                        failwithf "logic error 1: %A" x
+                        die <| sprintf "logic error 1: %A" x
 
                 let path = ps |> getPath
                 let c1 = path.[path.Length - 1]
@@ -595,7 +604,7 @@ module PartialSolution =
                         (c1.Y - c2.Y < 0 && ps.Board.TrainExitOnEdges.Contains Direction.Right) ||
                         (c1.Y - c2.Y > 0 && ps.Board.TrainExitOnEdges.Contains Direction.Left)
                     | _ -> 
-                        failwith "logic error 2"
+                        die "logic error 2"
 
                 ret
 
@@ -645,12 +654,12 @@ module PartialSolution =
         let ret = iter Set.empty (Set.add pathEnd Set.empty)
 
         //printfn "%A" ret
-        //if not ret then failwith "hi"
+        //if not ret then die "hi"
         ret
 
     let children ps =
         debug ps
-        if isComplete ps then failwith "can't get children from complete board"
+        if isComplete ps then die "can't get children from complete board"
         let c = ps |> getPath |> Array.last
         directionVectors
         |> List.choose (fun d -> ps |> tryAddTrack (Coordinate.addDirection d c))
@@ -720,8 +729,8 @@ type 'a Comparable = Comparable of 'a * ('a -> 'a -> int) with
             | Comparable(t, cmp), Comparable(o, _) -> cmp t o
     member this.Value = match this with Comparable (x,_) -> x
 
-    override this.Equals(x) = failwith ""
-    override this.GetHashCode() = failwith ""
+    override this.Equals(x) = die ""
+    override this.GetHashCode() = die ""
 
 let aStarSolver (g : PartialSolution -> int) (h : PartialSolution -> int) (ps : PartialSolution) =
     let gh ps = g ps + h ps
@@ -775,7 +784,7 @@ type PartialSolutionGameState(ps : PartialSolution) =
 
 
 type PartialSolution2Wrapper =
-    | PartialSolution2Root of (Board * Map<Coordinate,AlienType> * Map<Coordinate,AlienType>)
+    | PartialSolution2Root of Board
     | PartialSolution2 of PartialSolution2
 
 type PartialSolution2GameState(psw : PartialSolution2Wrapper) =
@@ -788,8 +797,8 @@ type PartialSolution2GameState(psw : PartialSolution2Wrapper) =
             | PartialSolution2 ps -> ps.Parent |> Option.map convert
         member this.Children = 
             match psw with
-            | PartialSolution2Root(board, aliens, boxes) ->
-                PartialSolution2.make board aliens boxes |> Array.map convert
+            | PartialSolution2Root(board) ->
+                PartialSolution2.make board |> Array.map convert
             | PartialSolution2 ps ->
                 PartialSolution2.children ps |> Array.map convert
         member this.IsSolution = 
@@ -798,10 +807,9 @@ type PartialSolution2GameState(psw : PartialSolution2Wrapper) =
             | PartialSolution2 ps ->
                 PartialSolution2.isSolution ps 
     override this.ToString() = 
-            match psw with
-            | PartialSolution2Root(_) -> "PartialSolution2Root"
-            | PartialSolution2 ps -> PartialSolution2.toString ps
-
+        match psw with
+        | PartialSolution2Root(_) -> "PartialSolution2Root"
+        | PartialSolution2 ps -> PartialSolution2.toString ps
 
 let b1 =
     [|
@@ -850,10 +858,9 @@ let andromeda11 =
     |]
 
 
+let initialState = b1 |> Board.Parse |> PartialSolution2Root |> PartialSolution2GameState
 
-let partialSolution1 = andromeda3 |> Board.Parse |> PartialSolution.makeEmpty
-
-partialSolution1 |> PartialSolutionGameState |> TextBasedAdventure.run
+initialState |> TextBasedAdventure.run
 
 //partialSolution1 |> PartialSolution.toString |> printfn "%s"
 
