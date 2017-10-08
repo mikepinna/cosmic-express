@@ -1,10 +1,19 @@
 open System
 
+[<AutoOpen>]
+module Prelude =
+
+    let cont s = printfn "%s" s ; failwith s
+
+    let dief s = Printf.kprintf cont s
+
+    let die s = dief "%s" s
+
 type 'a OrError = Ok of 'a | Error of string
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module OrError =
-    let force = function Ok x -> x | Error s -> failwithf "fatal error: %s" s
+    let force = function Ok x -> x | Error s -> dief "fatal error: %s" s
 
 type 'a Grid = Grid of 'a array array
 
@@ -23,7 +32,43 @@ module Grid =
             g.[row] <- newRow
             g |> Grid |> Ok
 
-type Board = Board of int option Grid
+type CellState = CellState of int Set
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module CellState =
+    let toString (CellState set) =
+        match Set.count set with
+        | 0 -> die "entry has no possible values"
+        | 1 -> set |> Seq.exactlyOne |> sprintf "%d"
+        | 9 -> " "
+        | _ -> "."
+
+    let private unset = [1 .. 9] |> Set |> CellState
+
+    let makeExact = Seq.singleton >> Set >> CellState
+
+    let parse =
+        function
+        | c when c >= '1' && c <= '9' ->
+            int c - int '0' |> makeExact
+        | ' ' ->
+            unset
+        | x ->
+            dief "parse error: %A" x
+
+    let isFullyKnown (CellState set) =
+        Set.count set = 1
+
+    let toOption (CellState set) =
+        if Set.count set = 1 then set |> Seq.exactlyOne |> Some else None
+
+    let hasExactValue value (CellState set) =
+        Set.count set = 1 && set |> Seq.exactlyOne = value
+
+    let mightBe value (CellState set) = Set.contains value set
+
+    let value (CellState set) = set
+
+type Board = Board of CellState Grid
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Board =
@@ -35,25 +80,18 @@ module Board =
                 [|d;e;f|]
                 [|g;h;i|]
             |]
-        | x -> failwithf "invalid line: %A" abs
+        | x -> dief "invalid line: %A" abs
 
     let parse (lines : string array) : Board =
-        let parsechar =
-            function
-            | c when c >= '1' && c <= '9' ->
-                Some (int c - int '0')
-            | ' ' ->
-                None
-            | x ->
-                failwithf "parse error: %A" x
+
         
-        let parseline = Array.ofSeq >> Array.map parsechar
+        let parseline = Array.ofSeq >> Array.map CellState.parse
         let parse = Array.map parseline
 
         let checknine a =
             match Array.length a with 
             | n when n = 9 -> ()
-            | n -> failwithf "wrong number of lines: %d" n
+            | n -> dief "wrong number of lines: %d" n
 
         let parsed = parse lines
         checknine parsed
@@ -65,12 +103,7 @@ module Board =
         let bigConcat sep a =
             sprintf "%s%s%s" sep (String.concat sep a) sep
 
-        let charToString =
-            function
-            | Some n -> sprintf "%d" n
-            | None -> " "
-
-        let charGroupToString = Array.map charToString >> bigConcat ""
+        let charGroupToString = Array.map CellState.toString >> bigConcat ""
 
         let lineToString = groupByThrees >> Array.map charGroupToString >> bigConcat "|"
 
@@ -131,12 +164,12 @@ module Projection =
         Array.init 9 (read projection board)
 
     let write projection (Board b) n value =
-        let check = Option.map (sprintf "square already has value %d") 
+        let check state = if CellState.isFullyKnown state then Some "square already has value" else None
         toCoords projection n ||> Grid.update b check value |> OrError.force |> Board
 
 module Tests =
     let assertEqual x1 x2 =
-        if x1 = x2 then () else printfn "not equal: %A %A" x1 x2; failwith ""
+        if x1 = x2 then () else dief "not equal: %A %A" x1 x2
 
     let test1 () =
         for n in 0..8 do
@@ -163,7 +196,7 @@ module Solver =
         //printfn "possibleValues %d %d" row col
         let valuesUsedViaProjectionMode mode =
             let p, n = Projection.fromCoords mode row col
-            let ret = Projection.readGroup board p |> Seq.choose id |> Set.ofSeq
+            let ret = Projection.readGroup board p |> Seq.choose CellState.toOption |> Set.ofSeq
             //printfn "valuesUsedViaProjectionMode %A = %A" mode ret
             ret
 
@@ -183,7 +216,7 @@ module Solver =
             Projection.fromCoords mode row col
             |> fst
             |> Projection.readGroup board
-            |> Array.contains (Some value)
+            |> Array.exists (CellState.hasExactValue value)
 
         let otherProjectionModesDontContainValue mode row col =
             Projection.getOtherModes mode
@@ -192,11 +225,11 @@ module Solver =
             |> not
 
         let group = Projection.readGroup board projection |> List.ofArray
-        if group |> List.contains (Some value) then printfn "already has location" ; failwith ""
+        if group |> List.exists (CellState.hasExactValue value) then die "already has location" 
 
         group
-        |> List.mapi (fun index value -> index, value)
-        |> List.choose (fun (index, value) -> if Option.isNone value then Some index else None)
+        |> List.mapi (fun index state -> index, state)
+        |> List.choose (fun (index, state) -> if CellState.mightBe value state then Some index else None)
         |> List.map (Projection.toCoords projection)
         |> List.filter (fun (r, c) -> otherProjectionModesDontContainValue projection.ProjectionMode r c)
 
@@ -205,15 +238,18 @@ module Solver =
             if col = 9 then None else
             let row', col' = if row = 8 then 0, col+1 else row+1, col
             let grid = match board with Board b -> b
-            if Grid.lookup grid row col |> Option.isSome then iterByCoordinate row' col' else
+            let currentState = Grid.lookup grid row col
+            if currentState |> CellState.isFullyKnown then iterByCoordinate row' col' else
+
+            let curr = CellState.value currentState
 
             let pv = possibleValues board row col
-            match Set.toList pv, board with
-            | [], _ ->
-                printfn "logic error at %d %d" row col ; failwith ""
-            | [value], Board b ->
-                let check = Option.map (sprintf "logic error: %d")
-                Grid.update b check (Some value) row col
+            match pv, board with
+            | s, _ when s = curr ->
+                iterByCoordinate row' col'
+            | s, Board b when Set.isProperSubset s curr ->
+                let check _ = None
+                Grid.update b check (CellState s) row col
                 |> OrError.force
                 |> Board
                 |> Some
@@ -226,15 +262,15 @@ module Solver =
 
             let projection = { ProjectionMode = ProjectionMode.Row; ProjectionNumber = row }
 
-            if Projection.readGroup board projection |> Array.contains (Some value) then iterByValue value' row' else
+            if Projection.readGroup board projection |> Array.exists (CellState.hasExactValue value) then iterByValue value' row' else
 
             let possible = possibleLocationsInProjection board projection value
             match possible, board with
             | [], _ ->
-                printfn "logic error at %A %d" projection row ; failwith ""
+                dief "logic error at %A %d" projection row
             | [(row, col)], Board b ->
-                let check = Option.map (sprintf "logic error: %d")
-                Grid.update b check (Some value) row col
+                let check state = if CellState.mightBe value state then None else Some "logic error"
+                Grid.update b check (CellState.makeExact value) row col
                 |> OrError.force
                 |> Board
                 |> Some
@@ -247,7 +283,7 @@ module Solver =
             match iterByValue 1 0 with
             | Some b -> b
             | None ->
-                printfn "no step forward found" ; failwith ""
+                die "no step forward found"
 let s =
 // https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/solo.html#3x3:4a5c1a8b9_7c5e2b4a7b3a5b9a9b7b3a3b2a8b7a4b3e8c2_3b5a3c4a2
     [| 
