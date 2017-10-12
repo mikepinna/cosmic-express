@@ -34,19 +34,28 @@ module Grid =
 
 type Symbol = Symbol of int
 
-type CellState = CellState of Symbol Set
+type CellState =
+    {
+        Symbols : Symbol Set
+        IsDirty : bool
+    }
+
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module CellState =
-    let toString (CellState set) =
-        match Set.count set with
+    let toString (cs : CellState) =
+        match Set.count cs.Symbols with
         | 0 -> die "entry has no possible values"
-        | 1 -> "." // set |> Seq.exactlyOne |> sprintf "%d"
-        //| 9 -> " "
-        | c -> sprintf "%d" c //"."
+        | 1 -> cs.Symbols |> Seq.exactlyOne |> fun (Symbol s) -> sprintf "%d" s
+        | 9 -> " "
+        | c -> "."
 
-    let private unset = [1 .. 9] |> Seq.map Symbol |> Set |> CellState
+    let make s = { Symbols = s; IsDirty = true }
 
-    let makeExact = Seq.singleton >> Set >> CellState
+    let clean cs = { cs with IsDirty = false }
+
+    let private unset = [1 .. 9] |> Seq.map Symbol |> Set |> make
+        
+    let makeExact = Seq.singleton >> Set >> make
 
     let parse =
         function
@@ -57,18 +66,18 @@ module CellState =
         | x ->
             dief "parse error: %A" x
 
-    let isFullyKnown (CellState set) =
-        Set.count set = 1
+    let isFullyKnown (cs : CellState) =
+        Set.count cs.Symbols = 1
 
-    let toOption (CellState set) =
-        if Set.count set = 1 then set |> Seq.exactlyOne |> Some else None
+    let toOption (cs : CellState) =
+        if Set.count cs.Symbols = 1 then cs.Symbols |> Seq.exactlyOne |> Some else None
 
-    let hasExactValue value (CellState set) =
-        Set.count set = 1 && set |> Seq.exactlyOne = value
+    let hasExactValue value (cs : CellState) =
+        Set.count cs.Symbols = 1 && cs.Symbols |> Seq.exactlyOne = value
 
-    let mightBe value (CellState set) = Set.contains value set
+    let mightBe value (cs : CellState) = Set.contains value cs.Symbols
 
-    let value (CellState set) = set
+    let value (cs : CellState) = cs.Symbols
 
 type Board = Board of CellState Grid
 
@@ -193,6 +202,8 @@ module Tests =
         test1 ()
         test2 ()
 
+type CycleDefinition = CycleDefinition of Projection * int Set * Symbol Set
+
 module Solver =
     /// A cycle is a group of N cells that must contain N known values between them (ie those values can't be elsewhere).
     /// NB if this is called on a full row the final set logically must contain all values.
@@ -211,11 +222,49 @@ module Solver =
     /// Our overall search strategy starts by looking for small cycles and only extending to bigger ones once the small ones stop making progress.
     let dummy = ()
 
-    /// Identify a cycle of the given size and return the indices of columns that make it up
-    let findNewCycle (size : int) (cells : Symbol Set list) : int list option =
-        failwith ""
+    let applyCycle (board : Board) (CycleDefinition (projection, entries, symbols)) : Board option =
+        printfn "applyCycle: %A %A %A" projection entries symbols
 
-    /// Look for a new cycle of the given size.  Return the elements in it.
+        let updateSymbol (transform : Symbol Set -> Symbol Set) (board : Board) (index : int) : Board =
+            //printfn "updating board:"
+            //printfn "%s" (Board.toString board)
+            let cs = Projection.read projection board index
+            //printfn "cs for index %A = %A" index cs
+            let symbols = cs.Symbols |> transform
+            //printfn "updated symbols = %A" symbols
+            if symbols = cs.Symbols then board else
+            let cs' = CellState.make symbols
+            let ret = Projection.write projection board index cs'
+            //printfn "updated board:"
+            //printfn "%s" (Board.toString ret)
+            ret
+
+        let restrictToCycleMembers = Set.intersect symbols
+        let excludeCycleMembers orig = Set.difference orig symbols
+        let applySetTransformation isInCycle = if isInCycle then restrictToCycleMembers else excludeCycleMembers
+        let doupdate board index =
+            //printfn "entries.Contains %A = %A" index (entries.Contains index)
+            let transform = entries.Contains index |> applySetTransformation
+            updateSymbol transform board index
+        let ret = Seq.fold doupdate board [0..9]
+        if ret = board then None else Some ret
+
+    /// Identify a cycle of the given size and return the indices of columns that make it up
+    let tryFindNewCycleInProjection (board : Board) (size : int) (projection : Projection) : Board option =
+        if size <> 1 then dief "size not implemented %A" size else
+        let x index symbol = CycleDefinition (projection, Set.singleton index, Set.singleton symbol) |> applyCycle board
+        let group = Projection.readGroup board projection
+        let tryEntry index = group.[index] |> CellState.toOption |> Option.bind (x index)
+        [0..8] |> Seq.tryPick tryEntry
+
+    let tryFindNewCycle (board : Board) (size : int) : Board option =
+        let allProjections = seq { for p in Projection.allModes do for n in [0..9] -> {ProjectionMode = p; ProjectionNumber = n} }
+        allProjections |> Seq.tryPick (tryFindNewCycleInProjection board size)
+
+    let step' (board : Board) : Board =
+        match tryFindNewCycle board 1 with
+        | None -> die "no cycle found - bailing"
+        | Some board -> board
 
 //    let rec findNewCycle (size : int) (colsUsed : int list) (valsInCycle : int Set) (colsRemaining : (int Set * int) list) : int list option =
 //        match colsRemaining with
@@ -294,7 +343,7 @@ module Solver =
                 iterByCoordinate row' col'
             | s, Board b when Set.isProperSubset s curr ->
                 let check _ = None
-                Grid.update b check (CellState s) row col
+                Grid.update b check (CellState.make s) row col
                 |> OrError.force
                 |> Board
                 |> Some
@@ -361,8 +410,18 @@ let s2 =
     |]
 
 Tests.runall ()
-let rec loop board : unit =
-    printfn "%s" (Board.toString board)
-    Solver.step board |> loop
 
-Board.parse s2 |> loop 
+
+let checkToken n = Some n
+//    let n' = n - 1
+//    if n' = 0 then None else Some n'
+
+let rec loop token board  : unit =
+    printfn "%s" (Board.toString board)
+    match checkToken token with
+    | None ->
+        printfn "terminating"
+    | Some t ->
+         (Solver.step' board) |> loop t
+
+Board.parse s2 |> loop 3
