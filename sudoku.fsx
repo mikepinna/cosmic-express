@@ -32,24 +32,26 @@ module Grid =
             g.[row] <- newRow
             g |> Grid |> Ok
 
-type CellState = CellState of int Set
+type Symbol = Symbol of int
+
+type CellState = CellState of Symbol Set
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module CellState =
     let toString (CellState set) =
         match Set.count set with
         | 0 -> die "entry has no possible values"
-        | 1 -> set |> Seq.exactlyOne |> sprintf "%d"
-        | 9 -> " "
-        | _ -> "."
+        | 1 -> "." // set |> Seq.exactlyOne |> sprintf "%d"
+        //| 9 -> " "
+        | c -> sprintf "%d" c //"."
 
-    let private unset = [1 .. 9] |> Set |> CellState
+    let private unset = [1 .. 9] |> Seq.map Symbol |> Set |> CellState
 
     let makeExact = Seq.singleton >> Set >> CellState
 
     let parse =
         function
         | c when c >= '1' && c <= '9' ->
-            int c - int '0' |> makeExact
+            int c - int '0' |> Symbol |> makeExact
         | ' ' ->
             unset
         | x ->
@@ -192,11 +194,53 @@ module Tests =
         test2 ()
 
 module Solver =
+    /// A cycle is a group of N cells that must contain N known values between them (ie those values can't be elsewhere).
+    /// NB if this is called on a full row the final set logically must contain all values.
+
+    /// Consider the possibilities for each cell in this row as a boolean matrix:
+    /// cellnumber  1 2 3 4 5 6 7 8 9
+    /// 1 possible  1 0 1 1 1 1 1 1 1
+    /// 2 possible  1 1 0 0 0 0 0 0 0
+    /// 3 possible  0 1 1 0 0 0 0 0 0
+    /// 4 possible  0 0 0 1 1 0 0 0 0
+    /// ...
+    /// There are two types of cycle:
+    /// 1. A group of N columns exists for which their row-wise union only contains N items
+    /// 2. A group of N rows exists for which their column-wise union only contains N items
+    ///
+    /// Our overall search strategy starts by looking for small cycles and only extending to bigger ones once the small ones stop making progress.
+    let dummy = ()
+
+    /// Identify a cycle of the given size and return the indices of columns that make it up
+    let findNewCycle (size : int) (cells : Symbol Set list) : int list option =
+        failwith ""
+
+    /// Look for a new cycle of the given size.  Return the elements in it.
+
+//    let rec findNewCycle (size : int) (colsUsed : int list) (valsInCycle : int Set) (colsRemaining : (int Set * int) list) : int list option =
+//        match colsRemaining with
+//        | [] ->
+//            None
+//        | (set, colid)::cols ->
+//            // Try the first item out as part of the cycle
+//            let valsInCycle' = Set.union valsInCycle set
+//            if valsInCycle'.Count <= size
+//            then
+//                let ret = findNewCycle size colid::colsUsed valsInCycle' cols
+//                if Option.IsSome ret then ret else
+
+
+
     let possibleValues board row col =
         //printfn "possibleValues %d %d" row col
         let valuesUsedViaProjectionMode mode =
             let p, n = Projection.fromCoords mode row col
-            let ret = Projection.readGroup board p |> Seq.choose CellState.toOption |> Set.ofSeq
+            let group = Projection.readGroup board p
+            let groupMinusThisCell =
+                group
+                |> Seq.mapi (fun i x -> i, x)
+                |> Seq.choose (fun (i, x) -> if i = n then None else Some x)
+            let ret = group |> Seq.choose CellState.toOption |> Set.ofSeq
             //printfn "valuesUsedViaProjectionMode %A = %A" mode ret
             ret
 
@@ -205,7 +249,7 @@ module Solver =
             |> List.map valuesUsedViaProjectionMode
             |> Set.unionMany
 
-        let possible = List.init 9 ((+) 1) |> Set.ofList
+        let possible = List.init 9 ((+) 1 >> Symbol) |> Set.ofList
         
         let ret = Set.difference possible allValuesUsed
         //printfn "ret = %A" ret
@@ -234,6 +278,7 @@ module Solver =
         |> List.filter (fun (r, c) -> otherProjectionModesDontContainValue projection.ProjectionMode r c)
 
     let step board : Board =
+        /// cut down possibilities for each coordinate based on other known cells
         let rec iterByCoordinate row col =
             if col = 9 then None else
             let row', col' = if row = 8 then 0, col+1 else row+1, col
@@ -256,12 +301,15 @@ module Solver =
             | _ ->
                 iterByCoordinate row' col'
         
+        /// look for ways to place the given value in the given row
         let rec iterByValue value row =
-            if value = 10 then None else
-            let value', row' = if row = 8 then value+1, 0 else value, row+1
+            let symbol = match value with Symbol s -> s
+            if symbol = 10 then None else
+            let value', row' = if row = 8 then Symbol(symbol+1), 0 else value, row+1
 
             let projection = { ProjectionMode = ProjectionMode.Row; ProjectionNumber = row }
 
+            // skip this (value, row) if already known
             if Projection.readGroup board projection |> Array.exists (CellState.hasExactValue value) then iterByValue value' row' else
 
             let possible = possibleLocationsInProjection board projection value
@@ -280,7 +328,7 @@ module Solver =
         match iterByCoordinate 0 0 with
         | Some b -> b
         | None ->
-            match iterByValue 1 0 with
+            match iterByValue (Symbol 1) 0 with
             | Some b -> b
             | None ->
                 die "no step forward found"
