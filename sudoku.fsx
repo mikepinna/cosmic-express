@@ -213,6 +213,17 @@ module Tests =
 
 type CycleDefinition = CycleDefinition of Projection * int Set * Symbol Set
 
+type 'a Matrix = Matrix of ('a [] [])
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Matrix =
+    let getRow (Matrix(m)) (index : int) : 'a [] =
+        m.[index]
+
+    let getCol (Matrix(m)) (index : int) : 'a [] =
+        m |> Array.map (fun row -> row.[index])
+
+
 module Solver =
     /// A cycle is a group of N cells that must contain N known values between them (ie those values can't be elsewhere).
     /// NB if this is called on a full row the final set logically must contain all values.
@@ -229,7 +240,40 @@ module Solver =
     /// 2. A group of N rows exists for which their column-wise union only contains N items
     ///
     /// Our overall search strategy starts by looking for small cycles and only extending to bigger ones once the small ones stop making progress.
-    let dummy = ()
+
+    /// This function looks in a matrix at a set of N columns (or rows), and if all of them only contain values in a particular N rows (or columns),
+    /// the set of the indices of those rows (or columns) are returned
+
+    let tryFindCycle (matrix : bool Matrix) (getRowOrCol : _ Matrix -> int -> _ []) (included : int Set) : int Set option =
+        let combine (r1 : bool []) (r2 : bool []) =
+            Array.zip r1 r2 |> Array.map (fun (i1, i2) -> i1 || i2)
+        let entries = included |> Seq.map (getRowOrCol matrix)
+        let combinedEntries = entries |> Seq.reduce combine
+        let entryCount = combinedEntries |> Seq.fold (fun n b -> if b then n+1 else n) 0
+        match entryCount with
+        | n when n > included.Count ->
+            None
+        | n when n = included.Count ->
+            combinedEntries
+            |> Seq.mapi (fun i b -> if b then Some i else None)
+            |> Seq.choose id
+            |> Set.ofSeq
+            |> Some
+        | _ ->
+            dief "logic error: entryCount = %A; includedRows = %A" entryCount included
+
+    let makeMatrix (cells : CellState []) : bool Matrix =
+        die "not implemented"
+
+    let tryMakeCycleDefinition (group : CellState[]) (projection : Projection) (cycle : int Set) (isRow : bool) : CycleDefinition option =
+        let matrix = makeMatrix group
+        if isRow
+        then
+            let cycle = tryFindCycle matrix Matrix.getRow cycle
+            let rowCycleToCycleDefinition = failwith ""
+            cycle |> Option.map rowCycleToCycleDefinition
+        else
+            failwith ""
 
     let applyCycle (board : Board) (CycleDefinition (projection, entries, symbols)) : Board option =
         //printfn "applyCycle: %A %A %A" projection entries symbols
@@ -258,13 +302,37 @@ module Solver =
         let ret = Seq.fold doUpdateForIndex board [0..8]
         if ret = board then None else Some ret
 
-    /// Identify a cycle of the given size and return the indices of columns that make it up
+    let getAllPossibleCycles (size : int) : int Set seq =
+        let rec inner (partial : int Set) (next : int) =
+            match Set.count partial with
+            | n when n > size ->
+                dief "logic error: %d > %d" n size
+            | n when n = size ->
+                partial |> Seq.singleton
+            | _ ->
+                let next' = next + 1
+                if next' > 9 then Seq.empty else
+                seq {
+                    yield! inner (Set.add next partial) next'
+                    yield! inner partial next'
+                }
+        inner Set.empty 0
+
+
     let tryFindNewCycleInProjection (board : Board) (size : int) (projection : Projection) : Board option =
+        let possibleCycles = getAllPossibleCycles size
+
+        let group = Projection.readGroup board projection
+        let matrix = group |> makeMatrix
+
+        let tryPossibleRowCycle pc = tryMakeCycleDefinition group projection pc true
+
+        failwith "continue implementing here"
+
         if size <> 1 then dief "size not implemented %A" size else
         let x index symbol = CycleDefinition (projection, Set.singleton index, Set.singleton symbol) |> applyCycle board
-        let group = Projection.readGroup board projection
-        let tryEntry index = group.[index] |> CellState.toOption |> Option.bind (x index)
-        [0..8] |> Seq.tryPick tryEntry
+        let tryIndex index = group.[index] |> CellState.toOption |> Option.bind (fun symbol -> x index symbol)
+        [0..8] |> Seq.tryPick tryIndex
 
     let tryFindNewCycle (board : Board) (size : int) : Board option =
         let allProjections = seq { for p in Projection.allModes do for n in [0..8] -> {ProjectionMode = p; ProjectionNumber = n} }
