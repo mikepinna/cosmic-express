@@ -42,12 +42,21 @@ type CellState =
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module CellState =
-    let toString (cs : CellState) =
+    let toString1 (cs : CellState) =
         match Set.count cs.Symbols with
         | 0 -> die "entry has no possible values"
         | 1 -> cs.Symbols |> Seq.exactlyOne |> fun (Symbol s) -> sprintf "%d" s
         | 9 -> " "
         | c -> "."
+
+    let toString2 (cs : CellState) =
+        match Set.count cs.Symbols with
+        | 0 -> die "entry has no possible values"
+        | 1 -> "."
+        | 9 -> " "
+        | c -> cs.Symbols |> Set.count |> sprintf "%d"
+
+    let toString = toString2
 
     let make s = { Symbols = s; IsDirty = true }
 
@@ -223,7 +232,7 @@ module Solver =
     let dummy = ()
 
     let applyCycle (board : Board) (CycleDefinition (projection, entries, symbols)) : Board option =
-        printfn "applyCycle: %A %A %A" projection entries symbols
+        //printfn "applyCycle: %A %A %A" projection entries symbols
 
         let updateSymbol (transform : Symbol Set -> Symbol Set) (board : Board) (index : int) : Board =
             //printfn "updating board:"
@@ -242,11 +251,11 @@ module Solver =
         let restrictToCycleMembers = Set.intersect symbols
         let excludeCycleMembers orig = Set.difference orig symbols
         let applySetTransformation isInCycle = if isInCycle then restrictToCycleMembers else excludeCycleMembers
-        let doupdate board index =
+        let doUpdateForIndex board index =
             //printfn "entries.Contains %A = %A" index (entries.Contains index)
             let transform = entries.Contains index |> applySetTransformation
             updateSymbol transform board index
-        let ret = Seq.fold doupdate board [0..9]
+        let ret = Seq.fold doUpdateForIndex board [0..8]
         if ret = board then None else Some ret
 
     /// Identify a cycle of the given size and return the indices of columns that make it up
@@ -258,7 +267,7 @@ module Solver =
         [0..8] |> Seq.tryPick tryEntry
 
     let tryFindNewCycle (board : Board) (size : int) : Board option =
-        let allProjections = seq { for p in Projection.allModes do for n in [0..9] -> {ProjectionMode = p; ProjectionNumber = n} }
+        let allProjections = seq { for p in Projection.allModes do for n in [0..8] -> {ProjectionMode = p; ProjectionNumber = n} }
         allProjections |> Seq.tryPick (tryFindNewCycleInProjection board size)
 
     let step' (board : Board) : Board =
@@ -277,8 +286,6 @@ module Solver =
 //            then
 //                let ret = findNewCycle size colid::colsUsed valsInCycle' cols
 //                if Option.IsSome ret then ret else
-
-
 
     let possibleValues board row col =
         //printfn "possibleValues %d %d" row col
@@ -417,6 +424,7 @@ let checkToken n = Some n
 //    if n' = 0 then None else Some n'
 
 let rec loop token board  : unit =
+    printfn "loop"
     printfn "%s" (Board.toString board)
     match checkToken token with
     | None ->
