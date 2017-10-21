@@ -9,6 +9,18 @@ module Prelude =
 
     let die s = dief "%s" s
 
+    type MaybeBuilder() =
+
+        member this.Bind(x, f) = 
+            match x with
+            | None -> None
+            | Some a -> f a
+
+        member this.Return(x) = 
+            Some x
+       
+    let maybe = MaybeBuilder ()
+
 type 'a OrError = Ok of 'a | Error of string
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
@@ -56,7 +68,7 @@ module CellState =
         | 9 -> " "
         | c -> cs.Symbols |> Set.count |> sprintf "%d"
 
-    let toString = toString2
+    let toString = toString1
 
     let make s = { Symbols = s; IsDirty = true }
 
@@ -211,7 +223,12 @@ module Tests =
         test1 ()
         test2 ()
 
-type CycleDefinition = CycleDefinition of Projection * int Set * Symbol Set
+type Cycle = 
+    { 
+        Projection : Projection
+        Entries : int Set
+        Symbols : Symbol Set
+    }
 
 type 'a Matrix = Matrix of ('a [] [])
 
@@ -222,6 +239,11 @@ module Matrix =
 
     let getCol (Matrix(m)) (index : int) : 'a [] =
         m |> Array.map (fun row -> row.[index])
+
+    let toString (Matrix m) =
+        let rowToString = Array.map (function true -> "1" | false -> "0") >> String.concat ""
+        m |> Array.map rowToString |> String.concat Environment.NewLine
+
 
 
 module Solver =
@@ -245,11 +267,17 @@ module Solver =
     /// the set of the indices of those rows (or columns) are returned
 
     let tryFindCycle (matrix : bool Matrix) (getRowOrCol : _ Matrix -> int -> _ []) (included : int Set) : int Set option =
+        //printfn "matrix ="
+        //printfn "%s" (Matrix.toString matrix)
+        //printfn "included = %A" included
         let combine (r1 : bool []) (r2 : bool []) =
             Array.zip r1 r2 |> Array.map (fun (i1, i2) -> i1 || i2)
         let entries = included |> Seq.map (getRowOrCol matrix)
+        //printfn "entries = %A" entries
         let combinedEntries = entries |> Seq.reduce combine
+        //printfn "combinedEntries = %A" combinedEntries
         let entryCount = combinedEntries |> Seq.fold (fun n b -> if b then n+1 else n) 0
+        //printfn "entryCount = %A" entryCount
         match entryCount with
         | n when n > included.Count ->
             None
@@ -263,41 +291,61 @@ module Solver =
             dief "logic error: entryCount = %A; includedRows = %A" entryCount included
 
     let makeMatrix (cells : CellState []) : bool Matrix =
-        die "not implemented"
+        let symbolToArray (symbol : Symbol) =
+            cells |> Array.map (fun cs -> Set.contains symbol cs.Symbols) 
+        [|1..9|] |> Array.map (Symbol >> symbolToArray) |> Matrix 
 
-    let tryMakeCycleDefinition (group : CellState[]) (projection : Projection) (cycle : int Set) (isRow : bool) : CycleDefinition option =
+    let tryMakeCycleDefinition (group : CellState[]) (projection : Projection) (potentialCycle : int Set) (isRow : bool) : Cycle option =
+        //printfn "tryMakeCycleDefinition -------------"
+        //printfn "group = %A" group
+        //printfn "projection = %A" projection
+        //printfn "potentialCycle = %A" potentialCycle
+        //printfn "isRow = %A" isRow
         let matrix = makeMatrix group
+
+        let makeCycle rows columns = { Projection = projection; Entries = columns; Symbols = rows |> Set.map ((+) 1 >> Symbol)}
+
         if isRow
         then
-            let cycle = tryFindCycle matrix Matrix.getRow cycle
-            let rowCycleToCycleDefinition = failwith ""
-            cycle |> Option.map rowCycleToCycleDefinition
+            let rows = potentialCycle
+            match tryFindCycle matrix Matrix.getRow rows with
+            | None ->
+                None
+            | Some columns ->
+                makeCycle rows columns
+                |> Some
         else
-            failwith ""
+            let columns = potentialCycle
+            match tryFindCycle matrix Matrix.getCol columns with
+            | None ->
+                None
+            | Some rows ->
+                makeCycle rows columns
+                |> Some
 
-    let applyCycle (board : Board) (CycleDefinition (projection, entries, symbols)) : Board option =
+    let applyCycle (board : Board) (cycle : Cycle) : Board option =
         //printfn "applyCycle: %A %A %A" projection entries symbols
 
         let updateSymbol (transform : Symbol Set -> Symbol Set) (board : Board) (index : int) : Board =
             //printfn "updating board:"
             //printfn "%s" (Board.toString board)
-            let cs = Projection.read projection board index
+            let cs = Projection.read cycle.Projection board index
             //printfn "cs for index %A = %A" index cs
             let symbols = cs.Symbols |> transform
             //printfn "updated symbols = %A" symbols
             if symbols = cs.Symbols then board else
             let cs' = CellState.make symbols
-            let ret = Projection.write projection board index cs'
+            let ret = Projection.write cycle.Projection board index cs'
             //printfn "updated board:"
             //printfn "%s" (Board.toString ret)
             ret
 
-        let restrictToCycleMembers = Set.intersect symbols
-        let excludeCycleMembers orig = Set.difference orig symbols
+        let restrictToCycleMembers = Set.intersect cycle.Symbols
+        let excludeCycleMembers orig = Set.difference orig cycle.Symbols
         let applySetTransformation isInCycle = if isInCycle then restrictToCycleMembers else excludeCycleMembers
         let doUpdateForIndex board index =
             //printfn "entries.Contains %A = %A" index (entries.Contains index)
-            let transform = entries.Contains index |> applySetTransformation
+            let transform = cycle.Entries.Contains index |> applySetTransformation
             updateSymbol transform board index
         let ret = Seq.fold doUpdateForIndex board [0..8]
         if ret = board then None else Some ret
@@ -323,17 +371,20 @@ module Solver =
         let possibleCycles = getAllPossibleCycles size
 
         let group = Projection.readGroup board projection
-        let matrix = group |> makeMatrix
+        //let matrix = group |> makeMatrix
 
         let tryPossibleRowCycle pc = tryMakeCycleDefinition group projection pc true
+        let tryPossibleColCycle pc = tryMakeCycleDefinition group projection pc false
 
-        failwith "continue implementing here"
+        let tryPossibleCycle pc =
+            match tryPossibleRowCycle pc with
+            | Some x as c ->
+                c
+            | None ->
+                tryPossibleColCycle pc
 
-        if size <> 1 then dief "size not implemented %A" size else
-        let x index symbol = CycleDefinition (projection, Set.singleton index, Set.singleton symbol) |> applyCycle board
-        let tryIndex index = group.[index] |> CellState.toOption |> Option.bind (fun symbol -> x index symbol)
-        [0..8] |> Seq.tryPick tryIndex
-
+        possibleCycles |> Seq.tryPick (tryPossibleCycle >> Option.bind (applyCycle board))
+        
     let tryFindNewCycle (board : Board) (size : int) : Board option =
         let allProjections = seq { for p in Projection.allModes do for n in [0..8] -> {ProjectionMode = p; ProjectionNumber = n} }
         allProjections |> Seq.tryPick (tryFindNewCycleInProjection board size)
@@ -500,4 +551,4 @@ let rec loop token board  : unit =
     | Some t ->
          (Solver.step' board) |> loop t
 
-Board.parse s2 |> loop 3
+Board.parse s |> loop 3
