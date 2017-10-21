@@ -246,7 +246,111 @@ module Matrix =
 
 
 
-module Solver =
+module Solver1 =
+    let possibleValues board row col =
+        //printfn "possibleValues %d %d" row col
+        let valuesUsedViaProjectionMode mode =
+            let p, n = Projection.fromCoords mode row col
+            let group = Projection.readGroup board p
+            let groupMinusThisCell =
+                group
+                |> Seq.mapi (fun i x -> i, x)
+                |> Seq.choose (fun (i, x) -> if i = n then None else Some x)
+            let ret = group |> Seq.choose CellState.toOption |> Set.ofSeq
+            //printfn "valuesUsedViaProjectionMode %A = %A" mode ret
+            ret
+
+        let allValuesUsed =
+            Projection.allModes
+            |> List.map valuesUsedViaProjectionMode
+            |> Set.unionMany
+
+        let possible = List.init 9 ((+) 1 >> Symbol) |> Set.ofList
+        
+        let ret = Set.difference possible allValuesUsed
+        //printfn "ret = %A" ret
+        ret
+
+    let possibleLocationsInProjection board projection value =
+        let projectionModeContainsValue row col mode =
+            Projection.fromCoords mode row col
+            |> fst
+            |> Projection.readGroup board
+            |> Array.exists (CellState.hasExactValue value)
+
+        let otherProjectionModesDontContainValue mode row col =
+            Projection.getOtherModes mode
+            |> List.map (projectionModeContainsValue row col)
+            |> List.reduce (||)
+            |> not
+
+        let group = Projection.readGroup board projection |> List.ofArray
+        if group |> List.exists (CellState.hasExactValue value) then die "already has location" 
+
+        group
+        |> List.mapi (fun index state -> index, state)
+        |> List.choose (fun (index, state) -> if CellState.mightBe value state then Some index else None)
+        |> List.map (Projection.toCoords projection)
+        |> List.filter (fun (r, c) -> otherProjectionModesDontContainValue projection.ProjectionMode r c)
+
+
+    let step board : Board =
+        /// cut down possibilities for each coordinate based on other known cells
+        let rec iterByCoordinate row col =
+            if col = 9 then None else
+            let row', col' = if row = 8 then 0, col+1 else row+1, col
+            let grid = match board with Board b -> b
+            let currentState = Grid.lookup grid row col
+            if currentState |> CellState.isFullyKnown then iterByCoordinate row' col' else
+
+            let curr = CellState.value currentState
+
+            let pv = possibleValues board row col
+            match pv, board with
+            | s, _ when s = curr ->
+                iterByCoordinate row' col'
+            | s, Board b when Set.isProperSubset s curr ->
+                let check _ = None
+                Grid.update b check (CellState.make s) row col
+                |> OrError.force
+                |> Board
+                |> Some
+            | _ ->
+                iterByCoordinate row' col'
+        
+        /// look for ways to place the given value in the given row
+        let rec iterByValue value row =
+            let symbol = match value with Symbol s -> s
+            if symbol = 10 then None else
+            let value', row' = if row = 8 then Symbol(symbol+1), 0 else value, row+1
+
+            let projection = { ProjectionMode = ProjectionMode.Row; ProjectionNumber = row }
+
+            // skip this (value, row) if already known
+            if Projection.readGroup board projection |> Array.exists (CellState.hasExactValue value) then iterByValue value' row' else
+
+            let possible = possibleLocationsInProjection board projection value
+            match possible, board with
+            | [], _ ->
+                dief "logic error at %A %d" projection row
+            | [(row, col)], Board b ->
+                let check state = if CellState.mightBe value state then None else Some "logic error"
+                Grid.update b check (CellState.makeExact value) row col
+                |> OrError.force
+                |> Board
+                |> Some
+            | _ ->
+                iterByValue value' row'
+        
+        match iterByCoordinate 0 0 with
+        | Some b -> b
+        | None ->
+            match iterByValue (Symbol 1) 0 with
+            | Some b -> b
+            | None ->
+                die "no step forward found"
+
+module Solver2 =
     /// A cycle is a group of N cells that must contain N known values between them (ie those values can't be elsewhere).
     /// NB if this is called on a full row the final set logically must contain all values.
 
@@ -324,7 +428,6 @@ module Solver =
                 |> Some
 
     let applyCycle (board : Board) (cycle : Cycle) : Board option =
-        //printfn "applyCycle: %A %A %A" projection entries symbols
 
         let updateSymbol (transform : Symbol Set -> Symbol Set) (board : Board) (index : int) : Board =
             //printfn "updating board:"
@@ -348,7 +451,12 @@ module Solver =
             let transform = cycle.Entries.Contains index |> applySetTransformation
             updateSymbol transform board index
         let ret = Seq.fold doUpdateForIndex board [0..8]
-        if ret = board then None else Some ret
+        if ret = board
+        then
+            None
+        else
+            printfn "applyCycle: %A" cycle
+            Some ret
 
     let getAllPossibleCycles (size : int) : int Set seq =
         let rec inner (partial : int Set) (next : int) =
@@ -386,129 +494,19 @@ module Solver =
         possibleCycles |> Seq.tryPick (tryPossibleCycle >> Option.bind (applyCycle board))
         
     let tryFindNewCycle (board : Board) (size : int) : Board option =
+        printfn "tryFindNewCycle, size = %d" size
         let allProjections = seq { for p in Projection.allModes do for n in [0..8] -> {ProjectionMode = p; ProjectionNumber = n} }
         allProjections |> Seq.tryPick (tryFindNewCycleInProjection board size)
 
     let step' (board : Board) : Board =
-        match tryFindNewCycle board 1 with
+        match [1..8] |> Seq.tryPick (tryFindNewCycle board) with
         | None -> die "no cycle found - bailing"
         | Some board -> board
 
-//    let rec findNewCycle (size : int) (colsUsed : int list) (valsInCycle : int Set) (colsRemaining : (int Set * int) list) : int list option =
-//        match colsRemaining with
-//        | [] ->
-//            None
-//        | (set, colid)::cols ->
-//            // Try the first item out as part of the cycle
-//            let valsInCycle' = Set.union valsInCycle set
-//            if valsInCycle'.Count <= size
-//            then
-//                let ret = findNewCycle size colid::colsUsed valsInCycle' cols
-//                if Option.IsSome ret then ret else
 
-    let possibleValues board row col =
-        //printfn "possibleValues %d %d" row col
-        let valuesUsedViaProjectionMode mode =
-            let p, n = Projection.fromCoords mode row col
-            let group = Projection.readGroup board p
-            let groupMinusThisCell =
-                group
-                |> Seq.mapi (fun i x -> i, x)
-                |> Seq.choose (fun (i, x) -> if i = n then None else Some x)
-            let ret = group |> Seq.choose CellState.toOption |> Set.ofSeq
-            //printfn "valuesUsedViaProjectionMode %A = %A" mode ret
-            ret
-
-        let allValuesUsed =
-            Projection.allModes
-            |> List.map valuesUsedViaProjectionMode
-            |> Set.unionMany
-
-        let possible = List.init 9 ((+) 1 >> Symbol) |> Set.ofList
-        
-        let ret = Set.difference possible allValuesUsed
-        //printfn "ret = %A" ret
-        ret
-
-    let possibleLocationsInProjection board projection value =
-        let projectionModeContainsValue row col mode =
-            Projection.fromCoords mode row col
-            |> fst
-            |> Projection.readGroup board
-            |> Array.exists (CellState.hasExactValue value)
-
-        let otherProjectionModesDontContainValue mode row col =
-            Projection.getOtherModes mode
-            |> List.map (projectionModeContainsValue row col)
-            |> List.reduce (||)
-            |> not
-
-        let group = Projection.readGroup board projection |> List.ofArray
-        if group |> List.exists (CellState.hasExactValue value) then die "already has location" 
-
-        group
-        |> List.mapi (fun index state -> index, state)
-        |> List.choose (fun (index, state) -> if CellState.mightBe value state then Some index else None)
-        |> List.map (Projection.toCoords projection)
-        |> List.filter (fun (r, c) -> otherProjectionModesDontContainValue projection.ProjectionMode r c)
-
-    let step board : Board =
-        /// cut down possibilities for each coordinate based on other known cells
-        let rec iterByCoordinate row col =
-            if col = 9 then None else
-            let row', col' = if row = 8 then 0, col+1 else row+1, col
-            let grid = match board with Board b -> b
-            let currentState = Grid.lookup grid row col
-            if currentState |> CellState.isFullyKnown then iterByCoordinate row' col' else
-
-            let curr = CellState.value currentState
-
-            let pv = possibleValues board row col
-            match pv, board with
-            | s, _ when s = curr ->
-                iterByCoordinate row' col'
-            | s, Board b when Set.isProperSubset s curr ->
-                let check _ = None
-                Grid.update b check (CellState.make s) row col
-                |> OrError.force
-                |> Board
-                |> Some
-            | _ ->
-                iterByCoordinate row' col'
-        
-        /// look for ways to place the given value in the given row
-        let rec iterByValue value row =
-            let symbol = match value with Symbol s -> s
-            if symbol = 10 then None else
-            let value', row' = if row = 8 then Symbol(symbol+1), 0 else value, row+1
-
-            let projection = { ProjectionMode = ProjectionMode.Row; ProjectionNumber = row }
-
-            // skip this (value, row) if already known
-            if Projection.readGroup board projection |> Array.exists (CellState.hasExactValue value) then iterByValue value' row' else
-
-            let possible = possibleLocationsInProjection board projection value
-            match possible, board with
-            | [], _ ->
-                dief "logic error at %A %d" projection row
-            | [(row, col)], Board b ->
-                let check state = if CellState.mightBe value state then None else Some "logic error"
-                Grid.update b check (CellState.makeExact value) row col
-                |> OrError.force
-                |> Board
-                |> Some
-            | _ ->
-                iterByValue value' row'
-        
-        match iterByCoordinate 0 0 with
-        | Some b -> b
-        | None ->
-            match iterByValue (Symbol 1) 0 with
-            | Some b -> b
-            | None ->
-                die "no step forward found"
 let s =
 // https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/solo.html#3x3:4a5c1a8b9_7c5e2b4a7b3a5b9a9b7b3a3b2a8b7a4b3e8c2_3b5a3c4a2
+// "trivial" difficulty
     [| 
         "4 5   1 8"
         "  97   5 "
@@ -521,8 +519,24 @@ let s =
         "5 3   4 2"
     |]
 
+let s1 =
+//https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/solo.html#3x3:b4a5_9a7_8a8c2_3b5f1a6c4b8c1c7c7b3c5a5f9b8_5c6a9_1a2_6a5b
+// "intermediate" difficulty
+    [| 
+        "  4 59 78"
+        " 8   23  "
+        "5      1 "
+        "6   4  8 "
+        "  1   7  "
+        " 7  3   5"
+        " 5      9"
+        "  85   6 "
+        "91 26 5  "
+    |]
+
 let s2 =
 // https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/solo.html#3x3:a5a2e8a7a1c6_3b7d4a3b2a4b1_2e8_9b9a4b2a7d6b2_2c3a5a7e2a1a
+// "unreasonable" difficulty
     [| 
         " 5 2     "
         "8 7 1   6"
@@ -549,6 +563,21 @@ let rec loop token board  : unit =
     | None ->
         printfn "terminating"
     | Some t ->
-         (Solver.step' board) |> loop t
+         (Solver2.step' board) |> loop t
 
-Board.parse s |> loop 3
+Board.parse s1 |> loop 3
+
+
+//+---+---+---+
+//|..4|.59|.78|
+//|.89|..2|35.|
+//|5..|...|91.|
+//+---+---+---+
+//|6.5|.4.|.8.|
+//|..1|..5|7..|
+//|.72|.3.|..5|
+//+---+---+---+
+//|.56|...|8.9|
+//|..8|59.|.6.|
+//|91.|268|5..|
+//+---+---+---+
