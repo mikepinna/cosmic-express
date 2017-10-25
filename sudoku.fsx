@@ -46,6 +46,64 @@ module Grid =
 
 type Symbol = Symbol of int
 
+type BoxString = BoxStringContent of String [] | BoxStringEmpty
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module BoxString =
+    let make (s : String) =
+        s
+        |> Array.singleton
+        |> BoxStringContent
+
+    let toString =
+        function
+        | BoxStringContent c ->
+            String.concat Environment.NewLine c
+        | BoxStringEmpty -> ""
+
+    let concatHorizontal (sep : string option) (bs1 : BoxString) (bs2 : BoxString) =
+        match bs1, bs2, sep with
+        | BoxStringEmpty, BoxStringEmpty, _ ->
+            BoxStringEmpty
+        | BoxStringContent c, BoxStringEmpty, None ->
+            bs1
+        | BoxStringEmpty, BoxStringContent c, None ->
+            bs2
+        | BoxStringContent c, BoxStringEmpty, Some sep ->
+            c
+            |> Array.map (fun row -> sprintf "%s%s" row sep)
+            |> BoxStringContent
+        | BoxStringEmpty, BoxStringContent c, Some sep ->
+            c
+            |> Array.map (fun row -> sprintf "%s%s" sep row)
+            |> BoxStringContent
+        | BoxStringContent c1, BoxStringContent c2, _ ->
+            let sep = match sep with Some s -> s | None -> ""
+            Array.zip c1 c2
+            |> Array.map (fun (s1, s2) -> sprintf "%s%s%s" s1 sep s2)
+            |> BoxStringContent
+            
+    let private concatArraysVertical (c1 : string array) (c2 : string array) =
+        Array.append c1 c2
+
+    let concatVertical (sep : string option) (bs1 : BoxString) (bs2 : BoxString) =
+        match bs1, bs2, sep with
+        | BoxStringEmpty, BoxStringEmpty, _ ->
+            BoxStringEmpty
+        | BoxStringContent c, BoxStringEmpty, None ->
+            bs1
+        | BoxStringEmpty, BoxStringContent c, None ->
+            bs2
+        | BoxStringContent c, BoxStringEmpty, Some sep ->
+            Array.append c [|sep|]
+            |> BoxStringContent
+        | BoxStringEmpty, BoxStringContent c, Some sep ->
+            Array.append [|sep|] c
+            |> BoxStringContent
+        | BoxStringContent c1, BoxStringContent c2, _ ->
+            Array.concat (match sep with Some sep -> [c1; [|sep|]; c2] | None -> [c1; c2])
+            |> BoxStringContent
+
 type CellState =
     {
         Symbols : Symbol Set
@@ -67,6 +125,17 @@ module CellState =
         | 1 -> "."
         | 9 -> " "
         | c -> cs.Symbols |> Set.count |> sprintf "%d"
+
+    let toBoxString (cs : CellState) =
+        let contains = Symbol >> cs.Symbols.Contains
+        let makeRow (n : int) =
+            [1;2;3]
+            |> List.map ((+) (n*3) >> fun i -> if contains i then i.ToString() else " ")
+            |> String.concat ""
+
+        [|0;1;2|]
+        |> Array.map makeRow
+        |> BoxStringContent
 
     let toString = toString1
 
@@ -144,6 +213,24 @@ module Board =
         let gridToString = groupByThrees >> Array.map lineGroupToString >> bigConcat "+---+---+---+"
 
         gridToString grid
+
+    let toBoxString (Board (Grid (grid))) : BoxString =
+        let bigConcat (concat : string option -> BoxString -> BoxString -> BoxString) (sep : string option) (a : BoxString seq) : BoxString =
+            seq { yield BoxStringEmpty ; yield! a ; yield BoxStringEmpty }
+            |> Seq.reduce (concat sep)
+
+        let cellToBoxString = CellState.toBoxString
+
+        let charGroupToBoxString = Array.map cellToBoxString >> Seq.reduce (BoxString.concatHorizontal (Some " "))
+
+        let lineToString = groupByThrees >> Array.map charGroupToBoxString >> bigConcat BoxString.concatHorizontal (Some "|")
+
+        let lineGroupToString = Array.map lineToString >> Seq.reduce (BoxString.concatVertical (Some "|           |           |           |"))
+        
+        let gridToString = groupByThrees >> Array.map lineGroupToString >> bigConcat BoxString.concatVertical (Some "+-----------+-----------+-----------+")
+
+        gridToString grid
+
 
 [<RequireQualifiedAccess>]
 type ProjectionMode = Square | Row | Col
@@ -558,7 +645,7 @@ let checkToken n = Some n
 
 let rec loop token board  : unit =
     printfn "loop"
-    printfn "%s" (Board.toString board)
+    printfn "%s" (Board.toBoxString board |> BoxString.toString)
     match checkToken token with
     | None ->
         printfn "terminating"
@@ -578,6 +665,22 @@ Board.parse s1 |> loop 3
 //|.72|.3.|..5|
 //+---+---+---+
 //|.56|...|8.9|
+//|..8|59.|.6.|
+//|91.|268|5..|
+//+---+---+---+
+
+
+
+//+---+---+---+
+//|..4|.59|.78|
+//|.89|..2|35.|
+//|5..|.8.|91.|
+//+---+---+---+
+//|6.5|.4.|.8.|
+//|..1|.25|7..|
+//|.72|.3.|..5|
+//+---+---+---+
+//|.56|...|829|
 //|..8|59.|.6.|
 //|91.|268|5..|
 //+---+---+---+
