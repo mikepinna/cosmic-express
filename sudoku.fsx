@@ -571,14 +571,9 @@ module Solver2 =
         let tryPossibleRowCycle pc = tryMakeCycleDefinition group projection pc true
         let tryPossibleColCycle pc = tryMakeCycleDefinition group projection pc false
 
-        let tryPossibleCycle pc =
-            match tryPossibleRowCycle pc with
-            | Some x as c ->
-                c
-            | None ->
-                tryPossibleColCycle pc
-
-        possibleCycles |> Seq.tryPick (tryPossibleCycle >> Option.bind (applyCycle board))
+        possibleCycles
+        |> Seq.collect (fun pc -> [tryPossibleRowCycle pc; tryPossibleColCycle pc])
+        |> Seq.tryPick (Option.bind (applyCycle board))
         
     let tryFindNewCycle (board : Board) (size : int) : Board option =
         printfn "tryFindNewCycle, size = %d" size
@@ -639,9 +634,11 @@ let s2 =
 Tests.runall ()
 
 
-let checkToken n = Some n
-//    let n' = n - 1
-//    if n' = 0 then None else Some n'
+let checkToken n = 
+    Some n
+    //Console.ReadLine () |> ignore ; Some n
+    //let n' = n - 1
+    //if n' = 0 then None else Some n'
 
 let rec loop token board  : unit =
     printfn "loop"
